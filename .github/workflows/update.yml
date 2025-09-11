@@ -1,0 +1,43 @@
+name: Update Prom
+
+on:
+  push:
+    branches: [ main, master ]
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run updater
+        env:
+          PROM_API_TOKEN: ${{ secrets.PROM_API_TOKEN }}
+          VENDOR_PREFIX: ${{ vars.VENDOR_PREFIX || 'SHOP' }}
+          HTTP_TIMEOUT_SECONDS: '120'
+          MAX_CONCURRENT_REQUESTS: '8'
+          UPDATE_MODE: 'both'
+          PROM_BASE_URL: 'https://my.prom.ua'
+          PROM_UPDATE_ENDPOINT: '/api/v1/products/edit_by_external_id'
+          PROM_AUTH_HEADER: 'Authorization'
+          PROM_AUTH_SCHEME: 'Bearer'
+          DRY_RUN: ${{ vars.DRY_RUN || '0' }}
+          IMPORT_URL: ${{ vars.IMPORT_URL || 'https://raw.githubusercontent.com/globusgaz/yml-generator/main/all_1.yml' }}
+          IMPORT_WAIT_SECONDS: ${{ vars.IMPORT_WAIT_SECONDS || '600' }}
+          LOG_HISTORY_KEEP: ${{ vars.LOG_HISTORY_KEEP || '20' }}
+        run: |
+          python -m src.prom_updater
