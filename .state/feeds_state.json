@@ -1,0 +1,23 @@
+{
+  "https://b2b.valeso.ua/data/9299a8aac7a137898fedac40fb8d0aa8.xml": {
+    "fingerprint": "c96baa2b342585fddf721c1f6251f481"
+  },
+  "https://kabinet.dropoffice.com.ua/data/b304928fc0b8719db27f7f1073997895.xml": {
+    "fingerprint": "928910e6bb0f9616a974ff6370ee915a"
+  },
+  "https://opt-drop.com/storage/xml/opt-drop-30.xml": {
+    "fingerprint": "W/\"68c204c1-77fa670\""
+  },
+  "https://api.dropshipping.ua/api/feeds/1849.xml": {
+    "fingerprint": "cb2a5e18e4594dcd4debf7607d11b233"
+  },
+  "https://api.dropshipping.ua/api/feeds/1850.xml": {
+    "fingerprint": "493f89983a4bb50fe1458acd51e372cf"
+  },
+  "https://api.dropshipping.ua/api/feeds/1851.xml": {
+    "fingerprint": "617249f670fa32048747d3fbedd1ae92"
+  },
+  "https://api.dropshipping.ua/api/feeds/1852.xml": {
+    "fingerprint": "f40e5e8880d13df526261f5fc605f841"
+  }
+}
