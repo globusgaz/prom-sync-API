@@ -19,25 +19,25 @@ LOG_HISTORY_DIR = os.path.join(LOG_DIR, "history")
 
 
 def write_log(text: str) -> None:
-	os.makedirs(LOG_DIR, exist_ok=True)
-	# overwrite latest
-	with open(LOG_FILE, "w", encoding="utf-8") as f:
-		f.write(text)
-	# write history file and rotate
-	os.makedirs(LOG_HISTORY_DIR, exist_ok=True)
-	ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-	hist_path = os.path.join(LOG_HISTORY_DIR, f"run-{ts}.log")
-	with open(hist_path, "w", encoding="utf-8") as hf:
-		hf.write(text)
-	# rotate
-	keep = int(os.getenv("LOG_HISTORY_KEEP", "10"))
-	files = sorted([p for p in os.listdir(LOG_HISTORY_DIR) if p.endswith(".log")])
-	to_delete = files[:-keep] if len(files) > keep else []
-	for name in to_delete:
-		try:
-			os.remove(os.path.join(LOG_HISTORY_DIR, name))
-		except Exception:
-			pass
+    os.makedirs(LOG_DIR, exist_ok=True)
+    # overwrite latest
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.write(text)
+    # write history file and rotate
+    os.makedirs(LOG_HISTORY_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    hist_path = os.path.join(LOG_HISTORY_DIR, f"run-{ts}.log")
+    with open(hist_path, "w", encoding="utf-8") as hf:
+        hf.write(text)
+    # rotate
+    keep = int(os.getenv("LOG_HISTORY_KEEP", "10"))
+    files = sorted([p for p in os.listdir(LOG_HISTORY_DIR) if p.endswith(".log")])
+    to_delete = files[:-keep] if len(files) > keep else []
+    for name in to_delete:
+        try:
+            os.remove(os.path.join(LOG_HISTORY_DIR, name))
+        except Exception:
+            pass
 
 
 def chunked(items: List[Dict], size: int) -> List[List[Dict]]:
@@ -98,27 +98,30 @@ def filter_updates_by_mode(updates: List[Dict], mode: str) -> List[Dict]:
     return updates
 
 
-async def maybe_import_new_products(settings, client: PromClient) -> None:
-    if not settings.import_url:
+async def maybe_import_new_products(settings, client: PromClient, urls: list[str]) -> None:
+    if not urls:
         return
     async with aiohttp.ClientSession() as session:
-        status, text = await client.trigger_import_url(session, settings.import_url)
-        ok = 200 <= status < 300
-        print(f"📥 Import URL: HTTP {status} — {'OK' if ok else 'ERROR'}")
-        if not ok:
-            print(text[:500])
-            return
-        try:
-            data = json.loads(text)
-            import_id = data.get("import_id") or data.get("id") or None
-        except Exception:
-            import_id = None
-        wait_seconds = settings.import_wait_seconds
-        print(f"⏳ Чекаємо {wait_seconds}s щоб імпорт обробився...")
-        time.sleep(wait_seconds)
-        if import_id:
-            st, st_text = await client.get_import_status(session, str(import_id))
-            print(f"📊 Import status HTTP {st}: {st_text[:200]}")
+        for url in urls:
+            status, text = await client.trigger_import_url(session, url)
+            ok = 200 <= status < 300
+            print(f"📥 Import URL {url}: HTTP {status} — {'OK' if ok else 'ERROR'}")
+            if not ok:
+                print(text[:500])
+                continue
+            try:
+                data = json.loads(text)
+                import_id = data.get("import_id") or data.get("id")
+            except Exception:
+                import_id = None
+
+            wait_seconds = settings.import_wait_seconds
+            print(f"⏳ Чекаємо {wait_seconds}s щоб імпорт {url} обробився...")
+            time.sleep(wait_seconds)
+
+            if import_id:
+                st, st_text = await client.get_import_status(session, str(import_id))
+                print(f"📊 Import status {url}: HTTP {st} → {st_text[:200]}")
 
 
 async def main_async() -> int:
@@ -148,14 +151,14 @@ async def main_async() -> int:
         write_log("\n".join(log_buffer))
         return 0
 
-    # Pre-step: import new products if configured
+    # Pre-step: import new products for ALL feeds
     await maybe_import_new_products(settings, PromClient(
         base_url=settings.prom_base_url,
         token=settings.prom_api_token,
         auth_header=settings.prom_auth_header,
         auth_scheme=settings.prom_auth_scheme,
         timeout_seconds=settings.http_timeout_seconds,
-    ))
+    ), urls)
 
     all_offers, results = await fetch_all_offers(urls)
     log(f"📦 Загальна кількість товарів (offers): {len(all_offers)}")
