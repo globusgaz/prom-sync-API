@@ -86,6 +86,12 @@ async def main_async() -> int:
 
     updates = extract_updates_from_offers(all_offers)
 
+    # ⚠️ Тест: змінюємо ціну для f5_40134 на 1 грн
+    for upd in updates:
+        if upd.get("external_id") == "f5_40134":
+            print("⚠️ Тест: змінюю ціну для f5_40134 на 1.0 грн")
+            upd["price"] = 1.0
+
     # Фільтруємо: тільки ціна та кількість
     filtered_updates = []
     for u in updates:
