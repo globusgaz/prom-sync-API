@@ -1,29 +1,3 @@
-name: Update Prom
-
-on:
-  push:
-    branches: [ main, master ]
-  schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
       - name: Run updater
         env:
           PROM_API_TOKEN: ${{ secrets.PROM_API_TOKEN }}
@@ -39,5 +13,6 @@ jobs:
           IMPORT_URL: ${{ vars.IMPORT_URL || 'https://raw.githubusercontent.com/globusgaz/yml-generator/main/all_1.yml' }}
           IMPORT_WAIT_SECONDS: ${{ vars.IMPORT_WAIT_SECONDS || '600' }}
           LOG_HISTORY_KEEP: ${{ vars.LOG_HISTORY_KEEP || '20' }}
+          DEBUG_PROM: '1'   # 🔎 вмикає розширений логінг
         run: |
           python -m src.prom_updater
