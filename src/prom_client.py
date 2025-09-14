@@ -65,3 +65,16 @@ class PromClient:
         async with session.get(url, headers=self._headers(), timeout=self.timeout_seconds) as resp:
             text = await resp.text()
             return resp.status, text
+
+    @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=5)
+    async def get_products(self, session: aiohttp.ClientSession, page: int = 1, per_page: int = 100) -> Tuple[int, Dict]:
+        """
+        Отримати список товарів з Prom (для побудови мапи external_id -> internal_id).
+        """
+        url = f"{self.base_url}/products/list?page={page}&per_page={per_page}"
+        async with session.get(url, headers=self._headers(), timeout=self.timeout_seconds) as resp:
+            try:
+                data = await resp.json()
+            except Exception:
+                data = {}
+            return resp.status, data
