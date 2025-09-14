@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 import aiohttp
 import backoff
 
@@ -23,7 +23,6 @@ class PromClient:
         self.timeout_seconds = timeout_seconds
 
     def _headers(self) -> Dict[str, str]:
-        """Формує стандартні HTTP-заголовки з токеном."""
         value = self.token
         if self.auth_scheme:
             value = f"{self.auth_scheme} {self.token}".strip()
@@ -34,11 +33,12 @@ class PromClient:
             "User-Agent": "PromUpdater/1.0",
         }
 
+    # ---------------- API ---------------- #
+
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=5)
     async def update_products(
         self, session: aiohttp.ClientSession, endpoint_path: str, payload: List[Dict]
     ) -> Tuple[int, str]:
-        """Оновлення товарів на Prom (поштучно або пачками)."""
         url = f"{self.base_url}{endpoint_path}"
         async with session.post(
             url, headers=self._headers(), json=payload, timeout=self.timeout_seconds
@@ -46,63 +46,15 @@ class PromClient:
             text = await resp.text()
             return resp.status, text
 
-    @staticmethod
-    def build_update_payload(updates: List[Dict]) -> List[Dict]:
-        """
-        Конвертує оновлення у формат, який очікує Prom для edit_by_external_id:
-        [
-          { id: external_id, quantity_in_stock, presence, presence_sure, price? }
-        ]
-        """
-        result: List[Dict] = []
-        for u in updates:
-            entry: Dict = {"id": u["external_id"]}
-            if "quantity" in u:
-                q = u["quantity"]
-                entry["quantity_in_stock"] = q
-                entry["presence"] = "available" if q and q > 0 else "not_available"
-                entry["presence_sure"] = True
-            if "price" in u:
-                entry["price"] = u["price"]
-            result.append(entry)
-        return result
-
-    @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=5)
-    async def trigger_import_url(
-        self, session: aiohttp.ClientSession, feed_url: str
-    ) -> Tuple[int, str]:
-        """Запускає імпорт по URL."""
-        url = f"{self.base_url}/api/v1/products/import_url"
-        payload = {"url": feed_url}
-        async with session.post(
-            url, headers=self._headers(), json=payload, timeout=self.timeout_seconds
-        ) as resp:
-            text = await resp.text()
-            return resp.status, text
-
-    @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=5)
-    async def get_import_status(
-        self, session: aiohttp.ClientSession, import_id: str
-    ) -> Tuple[int, str]:
-        """Отримати статус імпорту."""
-        url = f"{self.base_url}/api/v1/products/import/status/{import_id}"
-        async with session.get(
-            url, headers=self._headers(), timeout=self.timeout_seconds
-        ) as resp:
-            text = await resp.text()
-            return resp.status, text
-
     @backoff.on_exception(backoff.expo, (aiohttp.ClientError, asyncio.TimeoutError), max_tries=5)
     async def get_products(
         self, session: aiohttp.ClientSession, page: int = 1, per_page: int = 100
-    ) -> Tuple[int, Dict]:
+    ) -> Tuple[int, Any]:
         """
-        Отримати список товарів з Prom (для побудови мапи external_id -> internal_id).
+        Отримати список товарів з Prom (для побудови мапи external_id → id).
         """
-        url = f"{self.base_url}/products/list?page={page}&per_page={per_page}"
-        async with session.get(
-            url, headers=self._headers(), timeout=self.timeout_seconds
-        ) as resp:
+        url = f"{self.base_url}/api/v1/products/list?page={page}&per_page={per_page}"
+        async with session.get(url, headers=self._headers(), timeout=self.timeout_seconds) as resp:
             try:
                 data = await resp.json()
             except Exception:
