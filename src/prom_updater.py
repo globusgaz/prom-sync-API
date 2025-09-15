@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROM_API_KEY = os.getenv("PROM_API_KEY")
+PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
 PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit"
 
 HEADERS = {
