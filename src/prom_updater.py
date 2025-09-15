@@ -1,119 +1,115 @@
+# src/prom_updater.py
 import os
-import sys
-import time
-import json
+import asyncio
+import aiohttp
 import requests
-import xml.etree.ElementTree as ET
-from pathlib import Path
+import orjson
+import lxml.etree as ET
+from dotenv import load_dotenv
 
-PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_BASE_URL = os.getenv("PROM_BASE_URL", "https://my.prom.ua")
-PROM_UPDATE_ENDPOINT = os.getenv("PROM_UPDATE_ENDPOINT", "/api/v1/products/edit_by_external_id")
+load_dotenv()
 
-IMPORT_WAIT_SECONDS = int(os.getenv("IMPORT_WAIT_SECONDS", "600"))
-BATCH_SIZE = 20  # Prom рекомендує не відправляти більше 20 товарів за раз
+PROM_API_KEY = os.getenv("PROM_API_KEY")
+PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit"
 
 HEADERS = {
+    "Authorization": f"Bearer {PROM_API_KEY}",
     "Content-Type": "application/json",
-    "Authorization": f"Bearer {PROM_API_TOKEN}"
 }
 
-
-def load_feeds(feed_file="feeds.txt"):
-    urls = []
-    with open(feed_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#"):
-                urls.append(line)
-    print(f"🔗 Знайдено {len(urls)} посилань у {feed_file}")
-    return urls
-
-
-def parse_feed(url):
+# ==== ЗАВАНТАЖЕННЯ ФІДІВ ====
+async def fetch_feed(session, url: str):
     try:
-        resp = requests.get(url, timeout=120)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
-        offers = []
-        for offer in root.findall(".//offer"):
-            ext_id = offer.get("id") or offer.findtext("vendorCode") or offer.findtext("sku")
-            if not ext_id:
-                continue
-
-            price = offer.findtext("price")
-            stock = offer.findtext("stock_quantity") or offer.findtext("quantity") or "0"
-            available = offer.get("available", "true") in ["true", "1", "yes"]
-
-            offers.append({
-                "external_id": str(ext_id),
-                "price": float(price) if price else None,
-                "presence": "available" if available else "not_available",
-                "in_stock": available,
-                "quantity_in_stock": int(stock) if stock.isdigit() else None
-            })
-        return offers
+        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+            resp.raise_for_status()
+            text = await resp.text()
+            root = ET.fromstring(text.encode("utf-8"))
+            offers = root.findall(".//offer")
+            print(f"✅ {url} — {len(offers)} товарів")
+            return offers
     except Exception as e:
         print(f"❌ Помилка парсингу {url}: {e}")
         return []
 
 
-def send_updates(products):
-    updated = 0
-    for i in range(0, len(products), BATCH_SIZE):
-        batch = products[i:i + BATCH_SIZE]
-        payload = {"products": []}
-        for p in batch:
-            data = {
-                "external_id": p["external_id"]
-            }
-            if p.get("price") is not None:
-                data["price"] = p["price"]
-            if p.get("presence"):
-                data["presence"] = p["presence"]
-            if "in_stock" in p:
-                data["in_stock"] = p["in_stock"]
-            payload["products"].append(data)
+async def load_all_feeds(file_path="feeds.txt"):
+    with open(file_path, "r") as f:
+        urls = [line.strip() for line in f if line.strip()]
 
-        try:
-            r = requests.post(
-                PROM_BASE_URL + PROM_UPDATE_ENDPOINT,
-                headers=HEADERS,
-                data=json.dumps(payload).encode("utf-8"),
-                timeout=120
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_feed(session, url) for url in urls]
+        results = await asyncio.gather(*tasks)
+        all_offers = [offer for sublist in results for offer in sublist]
+        return all_offers
+
+
+# ==== ПРОМ API ====
+def get_prom_products():
+    """Забрати всі продукти з Prom (для побудови мапи vendorCode → id)."""
+    url = "https://my.prom.ua/api/v1/products/list"
+    page = 1
+    vendor_to_id = {}
+
+    while True:
+        resp = requests.get(url, headers=HEADERS, params={"page": page, "limit": 100})
+        if resp.status_code != 200:
+            print(f"⚠️ Prom list error {resp.status_code}: {resp.text}")
+            break
+
+        data = resp.json()
+        products = data.get("products", [])
+        if not products:
+            break
+
+        for p in products:
+            vendor_to_id[p.get("sku")] = p.get("id")
+
+        page += 1
+
+    print(f"DEBUG: мапа vendor->id розмір = {len(vendor_to_id)}")
+    return vendor_to_id
+
+
+def send_updates(updates):
+    if not updates:
+        print("🚫 Немає оновлень для відправки")
+        return
+
+    payload = {"products": updates}
+
+    # Логування того, що реально шлемо
+    print("DEBUG: payload до Prom:")
+    print(orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode())
+
+    resp = requests.post(PROM_BASE_URL, headers=HEADERS, data=orjson.dumps(payload))
+    print(f"HTTP {resp.status_code} — {resp.text}")
+
+
+# ==== ГОЛОВНА ЛОГІКА ====
+async def main():
+    offers = await load_all_feeds()
+    print(f"📦 Загальна кількість товарів: {len(offers)}")
+
+    vendor_to_id = get_prom_products()
+    updates = []
+
+    for offer in offers:
+        vendor_code = offer.get("id") or offer.findtext("vendorCode")
+        price = offer.findtext("price")
+        quantity = offer.findtext("quantity")
+
+        if vendor_code in vendor_to_id:
+            updates.append(
+                {
+                    "id": vendor_to_id[vendor_code],
+                    "price": float(price) if price else None,
+                    "quantity": int(quantity) if quantity else 0,
+                }
             )
-            if r.status_code == 200:
-                resp_json = r.json()
-                if "error" in resp_json:
-                    print(f"⚠️ Помилка Prom: {resp_json}")
-                else:
-                    print(f"✅ Успішно відправлено {len(batch)} товарів")
-                    updated += len(batch)
-            else:
-                print(f"❌ HTTP {r.status_code}: {r.text}")
-        except Exception as e:
-            print(f"❌ Запит не вдався: {e}")
-        time.sleep(1)  # щоб уникнути 429
-    return updated
 
-
-def main():
-    feeds = load_feeds()
-    all_products = []
-    for url in feeds:
-        products = parse_feed(url)
-        print(f"✅ {url} — {len(products)} товарів")
-        all_products.extend(products)
-
-    print(f"📦 Загальна кількість товарів: {len(all_products)}")
-
-    if not all_products:
-        print("🚫 Немає товарів для оновлення")
-        sys.exit(0)
-
-    updated = send_updates(all_products)
-    print(f"🎯 Завершено. Оновлено товарів: {updated}")
+    print(f"🛠️ Готово {len(updates)} оновлень")
+    send_updates(updates)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
