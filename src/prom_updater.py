@@ -10,14 +10,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit"
+PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
 
 HEADERS = {
-    "Authorization": f"Bearer {PROM_API_KEY}",
+    "Authorization": f"Bearer {PROM_API_TOKEN}",
     "Content-Type": "application/json",
 }
 
-# ==== ЗАВАНТАЖЕННЯ ФІДІВ ====
+# ==== Завантаження фідів ====
 async def fetch_feed(session, url: str):
     try:
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -31,7 +31,6 @@ async def fetch_feed(session, url: str):
         print(f"❌ Помилка парсингу {url}: {e}")
         return []
 
-
 async def load_all_feeds(file_path="feeds.txt"):
     with open(file_path, "r") as f:
         urls = [line.strip() for line in f if line.strip()]
@@ -39,69 +38,36 @@ async def load_all_feeds(file_path="feeds.txt"):
     async with aiohttp.ClientSession() as session:
         tasks = [fetch_feed(session, url) for url in urls]
         results = await asyncio.gather(*tasks)
-        all_offers = [offer for sublist in results for offer in sublist]
-        return all_offers
+        return [offer for sublist in results for offer in sublist]
 
-
-# ==== ПРОМ API ====
-def get_prom_products():
-    """Забрати всі продукти з Prom (для побудови мапи vendorCode → id)."""
-    url = "https://my.prom.ua/api/v1/products/list"
-    page = 1
-    vendor_to_id = {}
-
-    while True:
-        resp = requests.get(url, headers=HEADERS, params={"page": page, "limit": 100})
-        if resp.status_code != 200:
-            print(f"⚠️ Prom list error {resp.status_code}: {resp.text}")
-            break
-
-        data = resp.json()
-        products = data.get("products", [])
-        if not products:
-            break
-
-        for p in products:
-            vendor_to_id[p.get("sku")] = p.get("id")
-
-        page += 1
-
-    print(f"DEBUG: мапа vendor->id розмір = {len(vendor_to_id)}")
-    return vendor_to_id
-
-
+# ==== Prom API ====
 def send_updates(updates):
     if not updates:
         print("🚫 Немає оновлень для відправки")
         return
 
     payload = {"products": updates}
-
-    # Логування того, що реально шлемо
     print("DEBUG: payload до Prom:")
     print(orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode())
 
     resp = requests.post(PROM_BASE_URL, headers=HEADERS, data=orjson.dumps(payload))
     print(f"HTTP {resp.status_code} — {resp.text}")
 
-
-# ==== ГОЛОВНА ЛОГІКА ====
+# ==== Головна логіка ====
 async def main():
     offers = await load_all_feeds()
     print(f"📦 Загальна кількість товарів: {len(offers)}")
 
-    vendor_to_id = get_prom_products()
     updates = []
-
     for offer in offers:
-        vendor_code = offer.get("id") or offer.findtext("vendorCode")
+        external_id = offer.get("id") or offer.findtext("vendorCode")
         price = offer.findtext("price")
         quantity = offer.findtext("quantity")
 
-        if vendor_code in vendor_to_id:
+        if external_id:
             updates.append(
                 {
-                    "id": vendor_to_id[vendor_code],
+                    "external_id": external_id,
                     "price": float(price) if price else None,
                     "quantity": int(quantity) if quantity else 0,
                 }
@@ -109,7 +75,6 @@ async def main():
 
     print(f"🛠️ Готово {len(updates)} оновлень")
     send_updates(updates)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
