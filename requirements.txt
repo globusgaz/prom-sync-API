@@ -3,3 +3,4 @@ lxml==5.2.2
 python-dotenv==1.0.1
 orjson==3.10.7
 backoff==2.2.1
+requests==2.32.3
