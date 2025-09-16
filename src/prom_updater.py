@@ -2,8 +2,11 @@
 import os
 import asyncio
 import aiohttp
+import requests
+import orjson
 import lxml.etree as ET
 from dotenv import load_dotenv
+from itertools import islice
 
 load_dotenv()
 
@@ -15,11 +18,7 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-BATCH_SIZE = 100
-MAX_CONCURRENT = 5
-
-
-# ==== Завантаження фідів ====
+# ==== ЗАВАНТАЖЕННЯ ФІДІВ ====
 async def fetch_feed(session, url: str):
     try:
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -44,55 +43,88 @@ async def load_all_feeds(file_path="feeds.txt"):
         return [offer for sublist in results for offer in sublist]
 
 
-# ==== Оновлення на Prom ====
-async def send_batch(session, batch):
-    try:
-        async with session.post(PROM_BASE_URL, headers=HEADERS, json={"products": batch}) as resp:
-            text = await resp.text()
-            if resp.status != 200:
-                print(f"⚠️ Помилка Prom {resp.status}: {text}")
+# ==== ПРОМ API ====
+def get_prom_products():
+    """Отримати всі продукти з Prom у форматі sku → {id, price, quantity}."""
+    url = "https://my.prom.ua/api/v1/products/list"
+    page = 1
+    products_map = {}
+
+    while True:
+        resp = requests.get(url, headers=HEADERS, params={"page": page, "limit": 100})
+        if resp.status_code != 200:
+            print(f"⚠️ Prom list error {resp.status_code}: {resp.text}")
+            break
+
+        data = resp.json()
+        products = data.get("products", [])
+        if not products:
+            break
+
+        for p in products:
+            sku = p.get("sku")
+            if sku:
+                products_map[sku] = {
+                    "id": p.get("id"),
+                    "price": float(p.get("price", 0)),
+                    "quantity": int(p.get("presence", 0) != "not_available"),
+                }
+
+        page += 1
+
+    print(f"DEBUG: завантажено {len(products_map)} товарів з Prom")
+    return products_map
+
+
+def chunked(iterable, size=100):
+    it = iter(iterable)
+    for first in it:
+        yield [first, *list(islice(it, size - 1))]
+
+
+def send_updates(updates):
+    for i, batch in enumerate(chunked(updates, 100), start=1):
+        payload = {"products": batch}
+        try:
+            resp = requests.post(PROM_BASE_URL, headers=HEADERS, data=orjson.dumps(payload))
+            if resp.status_code == 200:
+                print(f"✅ Batch {i} — OK")
             else:
-                print(f"✅ Batch {len(batch)} — OK")
-    except Exception as e:
-        print(f"⚠️ Виняток при відправці batch: {e}")
+                print(f"⚠️ Batch {i} error {resp.status_code}: {resp.text}")
+        except Exception as e:
+            print(f"❌ Batch {i} failed: {e}")
 
 
-async def update_products(updates):
-    if not updates:
-        print("🚫 Немає оновлень")
-        return
-
-    # Розбиваємо по 100
-    batches = [updates[i : i + BATCH_SIZE] for i in range(0, len(updates), BATCH_SIZE)]
-
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [send_batch(session, batch) for batch in batches]
-        await asyncio.gather(*tasks)
-
-
-# ==== Головна логіка ====
+# ==== ГОЛОВНА ЛОГІКА ====
 async def main():
     offers = await load_all_feeds()
-    print(f"📦 Загальна кількість товарів: {len(offers)}")
+    print(f"📦 Загальна кількість товарів у фідах: {len(offers)}")
 
+    prom_products = get_prom_products()
     updates = []
-    for offer in offers:
-        external_id = offer.get("id")
-        price = offer.findtext("price")
-        quantity = offer.findtext("quantity")
 
-        if external_id and price:
-            updates.append(
-                {
-                    "external_id": external_id,
-                    "price": float(price),
-                    "quantity": int(quantity) if quantity else 0,
-                }
-            )
+    for offer in offers:
+        vendor_code = offer.get("id") or offer.findtext("vendorCode")
+        price = float(offer.findtext("price") or 0)
+        quantity = int(offer.findtext("quantity") or 0)
+
+        if vendor_code in prom_products:
+            prom_data = prom_products[vendor_code]
+
+            if price != prom_data["price"] or quantity != prom_data["quantity"]:
+                updates.append(
+                    {
+                        "id": prom_data["id"],
+                        "price": price,
+                        "quantity": quantity,
+                    }
+                )
 
     print(f"🛠️ Готово {len(updates)} оновлень")
-    await update_products(updates)
+    if updates:
+        send_updates(updates)
+    else:
+        print("🚫 Немає змін для відправки")
 
 
 if __name__ == "__main__":
