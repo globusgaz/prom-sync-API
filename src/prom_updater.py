@@ -3,8 +3,8 @@ import os
 import asyncio
 import aiohttp
 import lxml.etree as ET
-from dotenv import load_dotenv
 import orjson
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -16,8 +16,8 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-BATCH_SIZE = 100      # скільки товарів у запиті
-MAX_CONCURRENT = 5    # паралельні з'єднання
+BATCH_SIZE = 100
+MAX_CONCURRENT = 5
 
 
 # ==== Завантаження фідів ====
@@ -38,6 +38,7 @@ async def fetch_feed(session, url: str):
 async def load_all_feeds(file_path="feeds.txt"):
     with open(file_path, "r") as f:
         urls = [line.strip() for line in f if line.strip()]
+    print(f"🔗 Found {len(urls)} feed URLs in {file_path}")
 
     async with aiohttp.ClientSession() as session:
         tasks = [fetch_feed(session, url) for url in urls]
@@ -46,17 +47,32 @@ async def load_all_feeds(file_path="feeds.txt"):
 
 
 # ==== Відправка батчів ====
-async def send_batch(session, batch):
+payload_logged = False  # глобальний прапорець для логування лише 1-го payload
+
+
+async def send_batch(session, batch, batch_num):
+    global payload_logged
     try:
         payload = {"products": batch}
+
+        if not payload_logged:  # показати тільки перший payload
+            print("DEBUG: приклад payload до Prom:")
+            print(orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode())
+            payload_logged = True
+
         async with session.post(PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)) as resp:
             text = await resp.text()
             if resp.status != 200:
                 print(f"⚠️ Помилка Prom {resp.status}: {text}")
             else:
-                print(f"✅ Batch {len(batch)} — OK")
+                try:
+                    data = orjson.loads(text)
+                    updated = len(data.get("processed_ids", []))
+                except Exception:
+                    updated = len(batch)
+                print(f"✅ Batch {batch_num} — оновлено {updated} товарів")
     except Exception as e:
-        print(f"⚠️ Виняток при відправці batch: {e}")
+        print(f"⚠️ Виняток при відправці batch {batch_num}: {e}")
 
 
 async def update_products(updates):
@@ -68,7 +84,7 @@ async def update_products(updates):
 
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [send_batch(session, batch) for batch in batches]
+        tasks = [send_batch(session, batch, idx + 1) for idx, batch in enumerate(batches)]
         await asyncio.gather(*tasks)
 
 
@@ -79,20 +95,17 @@ async def main():
 
     updates = []
     for offer in offers:
-        external_id = offer.get("id") or offer.findtext("vendorCode")
+        external_id = offer.get("id")
         price = offer.findtext("price")
         quantity = offer.findtext("quantity")
 
         if external_id and price:
-            qty = int(quantity) if quantity else 0
-            presence = "available" if qty > 0 else "not_available"
-
             updates.append(
                 {
                     "external_id": external_id,
                     "price": float(price),
-                    "quantity_in_stock": qty,
-                    "presence": presence,
+                    "quantity_in_stock": int(quantity) if quantity else 0,
+                    "presence": "available" if quantity and int(quantity) > 0 else "not_available",
                 }
             )
 
