@@ -1,0 +1,31 @@
+name: Test Prom Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      sku:
+        description: "SKU товару (external_id)"
+        required: true
+      price:
+        description: "Нова ціна"
+        required: true
+
+jobs:
+  run-test-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run test update
+        env:
+          PROM_API_TOKEN: ${{ secrets.PROM_API_TOKEN }}
+        run: python test_update.py ${{ github.event.inputs.sku }} ${{ github.event.inputs.price }}
