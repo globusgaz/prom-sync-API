@@ -3,16 +3,18 @@ import os
 import json
 import requests
 
-API_URL = "https://my.prom.ua/api/v1/products/edit"  # правильний endpoint
+API_URL = "https://my.prom.ua/api/v1/products/edit"
 TOKEN = os.getenv("PROM_API_TOKEN")
 
 def main():
-    if len(sys.argv) < 3:
-        print("❌ Використання: python test_update.py <SKU> <PRICE>")
-        sys.exit(1)
-
-    sku = sys.argv[1]
-    new_price = sys.argv[2]
+    # Якщо передали аргументи у консоль — беремо їх
+    if len(sys.argv) >= 3:
+        sku = sys.argv[1]
+        new_price = sys.argv[2]
+    else:
+        # Якщо ні — запитуємо у користувача
+        sku = input("Введи SKU (external_id): ").strip()
+        new_price = input("Введи нову ціну: ").strip()
 
     payload = [
         {
