@@ -1,39 +1,42 @@
-import requests
-import os
-import json
+# test_update.py
 import sys
+import os
+import requests
+import json
 
-API_TOKEN = os.getenv("PROM_API_TOKEN")
-API_URL = "https://my.prom.ua/api/v1/products/edit"
+def main():
+    if len(sys.argv) < 3:
+        print("❌ Використання: python test_update.py <sku> <price>")
+        sys.exit(1)
 
-if len(sys.argv) < 3:
-    print("❌ Використання: python test_update.py <SKU> <ЦІНА>")
-    sys.exit(1)
+    sku = sys.argv[1]
+    price = float(sys.argv[2])
+    token = os.getenv("PROM_API_TOKEN")
 
-sku = sys.argv[1]
-new_price = float(sys.argv[2])
+    if not token:
+        print("❌ Немає токена PROM_API_TOKEN")
+        sys.exit(1)
 
-payload = {
-    "products": [
-        {
-            "external_id": sku,
-            "price": new_price,
-            "quantity_in_stock": 5,
-            "presence": "available"
-        }
-    ]
-}
+    url = "https://my.prom.ua/api/v1/products/edit"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept-Language": "uk"
+    }
 
-headers = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type": "application/json",
-    "Accept": "application/json"
-}
+    payload = [{
+        "id": sku,
+        "price": price,
+        "quantity_in_stock": 99,
+        "presence": "available"
+    }]
 
-resp = requests.post(API_URL, headers=headers, json=payload)
+    print("➡️ Відправляю на Prom:", json.dumps(payload, ensure_ascii=False, indent=2))
 
-print("Status code:", resp.status_code)
-try:
-    print("Response JSON:", json.dumps(resp.json(), indent=2, ensure_ascii=False))
-except Exception:
-    print("Raw response:", resp.text)
+    r = requests.post(url, headers=headers, json=payload)
+
+    print("📥 Статус:", r.status_code)
+    print("📥 Відповідь:", r.text)
+
+if __name__ == "__main__":
+    main()
