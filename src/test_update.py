@@ -23,12 +23,12 @@ except ValueError:
 
 headers = {
     "Authorization": f"Bearer {PROM_API_TOKEN}",
-    "Content-Type": "application/json",
     "Accept-Language": "uk",
+    "Content-Type": "application/x-www-form-urlencoded"
 }
 
 payload = {
-    "products": [
+    "products": json.dumps([
         {
             "external_id": SKU,
             "price": PRICE,
@@ -37,13 +37,13 @@ payload = {
             "presence_sure": True,
             "status": "on_display"
         }
-    ]
+    ])
 }
 
-print("➡️ Відправляю на Prom (v1):")
+print("➡️ Відправляю (form-data):")
 print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-resp = requests.post(PROM_BASE_URL, headers=headers, json=payload)
+resp = requests.post(PROM_BASE_URL, headers=headers, data=payload)
 
 print("📥 Статус:", resp.status_code)
 try:
