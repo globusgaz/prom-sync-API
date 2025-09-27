@@ -3,11 +3,11 @@ import sys
 import requests
 import json
 
-PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit"
+API_TOKEN = os.getenv("PROM_API_TOKEN")
+URL = "https://my.prom.ua/api/v1/products/edit"
 
-if not PROM_API_TOKEN:
-    print("❌ PROM_API_TOKEN не заданий")
+if not API_TOKEN:
+    print("❌ Не знайдено PROM_API_TOKEN")
     sys.exit(1)
 
 if len(sys.argv) < 3:
@@ -22,31 +22,27 @@ except ValueError:
     sys.exit(1)
 
 headers = {
-    "Authorization": f"Bearer {PROM_API_TOKEN}",
+    "X-Api-Key": API_TOKEN,
     "Accept-Language": "uk",
     "Content-Type": "application/x-www-form-urlencoded"
 }
 
 payload = {
-    "products": json.dumps([
-        {
-            "external_id": SKU,
-            "price": PRICE,
-            "presence": "available",
-            "quantity_in_stock": 99,
-            "presence_sure": True,
-            "status": "on_display"
-        }
-    ])
+    "products[0][id]": SKU,
+    "products[0][price]": PRICE,
+    "products[0][presence]": "available",
+    "products[0][quantity_in_stock]": 99,
+    "products[0][presence_sure]": "true",
+    "products[0][status]": "on_display"
 }
 
-print("➡️ Відправляю (form-data):")
+print("➡️ Відправляю (form-urlencoded):")
 print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-resp = requests.post(PROM_BASE_URL, headers=headers, data=payload)
+response = requests.post(URL, headers=headers, data=payload)
 
-print("📥 Статус:", resp.status_code)
+print("📥 Статус:", response.status_code)
 try:
-    print("📥 Відповідь:", resp.json())
+    print("📥 Відповідь:", response.json())
 except:
-    print("📥 Відповідь (text):", resp.text)
+    print("📥 Відповідь (text):", response.text)
