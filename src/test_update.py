@@ -1,44 +1,50 @@
 import os
 import sys
-import json
 import requests
+import json
+
+PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
+PROM_BASE_URL = "https://my.prom.ua/api/v1/products/edit"
+
+if not PROM_API_TOKEN:
+    print("❌ Помилка: змінна оточення PROM_API_TOKEN не задана")
+    sys.exit(1)
 
 if len(sys.argv) < 3:
-    print("Використання: python test_update.py <external_id> <price>")
+    print("❌ Використання: python test_update.py <SKU> <PRICE>")
     sys.exit(1)
 
 SKU = sys.argv[1]
-PRICE = float(sys.argv[2])
-
-API_TOKEN = os.getenv("PROM_API_TOKEN")
-if not API_TOKEN:
-    print("❌ Помилка: змінна середовища PROM_API_TOKEN не задана")
+try:
+    PRICE = float(sys.argv[2])
+except ValueError:
+    print("❌ Ціна має бути числом")
     sys.exit(1)
 
-# ✅ Правильний URL для Prom API v1:
-API_URL = "https://my.prom.ua/api/v1/products/edit"
-
-payload = {
-    "products": [
-        {
-            "id": SKU,
-            "price": PRICE
-        }
-    ]
-}
-
 headers = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type": "application/json"
+    "Authorization": f"Bearer {PROM_API_TOKEN}",
+    "Content-Type": "application/json",
+    "Accept-Language": "uk",
 }
+
+payload = [
+    {
+        "id": SKU,
+        "price": PRICE,
+        "presence": "available",
+        "quantity_in_stock": 99,
+        "status": "on_display",
+        "presence_sure": True
+    }
+]
 
 print("➡️ Відправляю на Prom (v1):")
-print(json.dumps(payload, indent=2, ensure_ascii=False))
+print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-response = requests.post(API_URL, headers=headers, json=payload)
+resp = requests.post(PROM_BASE_URL, headers=headers, json=payload)
 
-print(f"📥 Статус: {response.status_code}")
+print("📥 Статус:", resp.status_code)
 try:
-    print("📥 Відповідь:", response.json())
-except Exception:
-    print("📥 Відповідь (raw):", response.text)
+    print("📥 Відповідь:", resp.json())
+except:
+    print("📥 Відповідь (text):", resp.text)
