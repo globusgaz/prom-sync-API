@@ -1,48 +1,46 @@
-import sys
 import os
+import sys
 import json
 import requests
 
+if len(sys.argv) < 3:
+    print("Використання: python test_update.py <external_id> <price>")
+    sys.exit(1)
+
+SKU = sys.argv[1]
+PRICE = float(sys.argv[2])
+
+API_TOKEN = os.getenv("PROM_API_TOKEN")
+if not API_TOKEN:
+    print("❌ Помилка: змінна середовища PROM_API_TOKEN не задана")
+    sys.exit(1)
+
+# ✅ Правильний URL для Prom API v1:
 API_URL = "https://my.prom.ua/api/v1/products/edit"
-TOKEN = os.getenv("PROM_API_TOKEN")
 
-def main():
-    # Якщо передали аргументи у консоль — беремо їх
-    if len(sys.argv) >= 3:
-        sku = sys.argv[1]
-        new_price = sys.argv[2]
-    else:
-        # Якщо ні — запитуємо у користувача
-        sku = input("Введи SKU (external_id): ").strip()
-        new_price = input("Введи нову ціну: ").strip()
-
-    payload = [
+payload = {
+    "products": [
         {
-            "id": sku,
-            "price": float(new_price),
+            "external_id": SKU,
+            "price": PRICE,
             "quantity_in_stock": 99,
-            "presence": "available",
-            "presence_sure": True,
-            "status": "on_display"
+            "presence": "available"
         }
     ]
+}
 
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json",
-        "Accept-Language": "uk"
-    }
+headers = {
+    "Authorization": f"Bearer {API_TOKEN}",
+    "Content-Type": "application/json"
+}
 
-    print("➡️ Відправляю на Prom:", json.dumps(payload, ensure_ascii=False, indent=2))
+print("➡️ Відправляю на Prom (v1):")
+print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    response = requests.post(API_URL, headers=headers, json=payload)
+response = requests.post(API_URL, headers=headers, json=payload)
 
-    print(f"📥 Статус: {response.status_code}")
-    try:
-        print("📥 Відповідь:", response.json())
-    except Exception:
-        print("📥 Відповідь (raw):", response.text)
-
-
-if __name__ == "__main__":
-    main()
+print(f"📥 Статус: {response.status_code}")
+try:
+    print("📥 Відповідь:", response.json())
+except Exception:
+    print("📥 Відповідь (raw):", response.text)
