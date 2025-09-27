@@ -21,10 +21,8 @@ API_URL = "https://my.prom.ua/api/v1/products/edit"
 payload = {
     "products": [
         {
-            "external_id": SKU,
-            "price": PRICE,
-            "quantity_in_stock": 99,
-            "presence": "available"
+            "id": SKU,
+            "price": PRICE
         }
     ]
 }
