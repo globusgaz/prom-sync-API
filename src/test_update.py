@@ -3,46 +3,46 @@ import sys
 import requests
 import json
 
-API_TOKEN = os.getenv("PROM_API_TOKEN")
-https://detalua.prom.ua/api/v1/products/update
+API_URL = "https://detalua.prom.ua/api/v1/products/update"  # ✅ правильний формат
 
-if not API_TOKEN:
-    print("❌ Не знайдено PROM_API_TOKEN")
-    sys.exit(1)
+def main():
+    if len(sys.argv) < 3:
+        print("Використання: python test_update.py <external_id> <price>")
+        sys.exit(1)
 
-if len(sys.argv) < 3:
-    print("❌ Використання: python test_update.py <SKU> <PRICE>")
-    sys.exit(1)
+    external_id = sys.argv[1]
+    price = float(sys.argv[2])
 
-SKU = sys.argv[1]
-try:
-    PRICE = float(sys.argv[2])
-except ValueError:
-    print("❌ Ціна має бути числом")
-    sys.exit(1)
+    token = os.getenv("PROM_API_TOKEN")
+    if not token:
+        print("❌ Не знайдено токен PROM_API_TOKEN у середовищі")
+        sys.exit(1)
 
-payload = {
-    "products": [
-        {
-            "external_id": SKU,
-            "price": PRICE
-        }
-    ]
-}
+    payload = {
+        "products": [
+            {
+                "external_id": external_id,
+                "price": price
+            }
+        ]
+    }
 
-headers = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Accept-Language": "uk",
-    "Content-Type": "application/json"
-}
+    print("➡️ Відправляю як JSON:")
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-print("➡️ Відправляю як JSON:")
-print(json.dumps(payload, ensure_ascii=False, indent=2))
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
 
-response = requests.post(URL, headers=headers, json=payload)
+    response = requests.post(API_URL, json=payload, headers=headers)
+    print(f"📥 Статус: {response.status_code}")
 
-print("📥 Статус:", response.status_code)
-try:
-    print("📥 Відповідь:", response.json())
-except:
-    print("📥 Відповідь (text):", response.text)
+    try:
+        print("📥 Відповідь:", response.json())
+    except:
+        print("📥 Відповідь (text):", response.text)
+
+
+if __name__ == "__main__":
+    main()
