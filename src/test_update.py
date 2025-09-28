@@ -21,25 +21,27 @@ except ValueError:
     print("❌ Ціна має бути числом")
     sys.exit(1)
 
+payload = [
+    {
+        "id": SKU,
+        "price": PRICE,
+        "presence": "available",
+        "quantity_in_stock": 99,
+        "presence_sure": True,
+        "status": "on_display"
+    }
+]
+
 headers = {
     "Authorization": f"Bearer {API_TOKEN}",
     "Accept-Language": "uk",
-    "Content-Type": "application/x-www-form-urlencoded"
+    "Content-Type": "application/json"
 }
 
-payload = {
-    "products[0][id]": SKU,
-    "products[0][price]": PRICE,
-    "products[0][presence]": "available",
-    "products[0][quantity_in_stock]": 99,
-    "products[0][presence_sure]": "true",
-    "products[0][status]": "on_display"
-}
-
-print("➡️ Відправляю (form-urlencoded):")
+print("➡️ Відправляю як JSON:")
 print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-response = requests.post(URL, headers=headers, data=payload)
+response = requests.post(URL, headers=headers, json=payload)
 
 print("📥 Статус:", response.status_code)
 try:
