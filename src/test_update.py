@@ -7,7 +7,7 @@ import sys
 API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 # ✅ ТВОЯ СТОРІНКА: detalua.prom.ua
-API_URL = "https://detalua.prom.ua/api/v1/products/edit"
+API_URL = "https://my.prom.ua/api/v1/products/edit"
 
 
 def main():
