@@ -21,16 +21,14 @@ except ValueError:
     print("❌ Ціна має бути числом")
     sys.exit(1)
 
-payload = [
-    {
-        "id": SKU,
-        "price": PRICE,
-        "presence": "available",
-        "quantity_in_stock": 99,
-        "presence_sure": True,
-        "status": "on_display"
-    }
-]
+payload = {
+    "products": [
+        {
+            "external_id": SKU,
+            "price": PRICE
+        }
+    ]
+}
 
 headers = {
     "Authorization": f"Bearer {API_TOKEN}",
