@@ -1,26 +1,32 @@
-import sys
 import json
+import os
 import requests
+import sys
 
-# ▶️ ТВОЙ ТОКЕН
-API_TOKEN = "cf92d55fedc41652112cea7c26c405fb********"
+# ✅ Читаємо токен з GitHub Secrets
+API_TOKEN = os.getenv("PROM_API_TOKEN")
 
-# ▶️ API URL
-API_URL = "https://my.prom.ua/api/v1/products/edit"
+# ✅ ТВОЯ СТОРІНКА: detalua.prom.ua
+API_URL = "https://detalua.prom.ua/api/v1/products/edit"
+
 
 def main():
     if len(sys.argv) != 3:
         print("❌ Використання: python test_update.py <external_id> <price>")
         sys.exit(1)
 
-    product_id = sys.argv[1]
-    new_price = float(sys.argv[2])
+    external_id = sys.argv[1]
+    price = float(sys.argv[2])
+
+    if not API_TOKEN:
+        print("❌ Помилка: токен не знайдено (PROM_API_TOKEN порожній).")
+        sys.exit(1)
 
     payload = {
         "products": [
             {
-                "external_id": product_id,
-                "price": new_price
+                "external_id": external_id,
+                "price": price
             }
         ]
     }
@@ -36,11 +42,11 @@ def main():
     response = requests.post(API_URL, headers=headers, json=payload)
 
     print(f"📥 Статус: {response.status_code}")
-
     try:
         print("📥 Відповідь:", response.json())
     except:
         print("📥 Відповідь (text):", response.text)
+
 
 if __name__ == "__main__":
     main()
