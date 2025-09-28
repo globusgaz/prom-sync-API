@@ -22,7 +22,7 @@ except ValueError:
     sys.exit(1)
 
 headers = {
-    "X-Api-Key": API_TOKEN,
+    "Authorization": f"Bearer {API_TOKEN}",
     "Accept-Language": "uk",
     "Content-Type": "application/x-www-form-urlencoded"
 }
