@@ -4,7 +4,7 @@ import requests
 import json
 
 API_TOKEN = os.getenv("PROM_API_TOKEN")
-URL = "https://my.prom.ua/api/v1/products/edit-external-id"
+https://detalua.prom.ua/api/v1/products/update
 
 if not API_TOKEN:
     print("❌ Не знайдено PROM_API_TOKEN")
