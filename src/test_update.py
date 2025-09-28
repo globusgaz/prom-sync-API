@@ -6,8 +6,8 @@ import sys
 # ✅ Читаємо токен з GitHub Secrets
 API_TOKEN = os.getenv("PROM_API_TOKEN")
 
-# ✅ ТВОЯ СТОРІНКА: detalua.prom.ua
-API_URL = "https://my.prom.ua/api/v1/products/edit"
+# ✅ Правильний endpoint
+API_URL = "https://my.prom.ua/api/v1/products/update"
 
 
 def main():
