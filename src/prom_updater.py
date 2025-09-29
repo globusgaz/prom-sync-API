@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_EDIT_URL = "https://my.prom.ua/api/v1/products/edit"
+PROM_EDIT_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
 
 HEADERS = {
     "Authorization": f"Bearer {PROM_API_TOKEN}",
@@ -24,7 +24,6 @@ LOG_FILE = "prom_update.log"
 
 
 def log_to_file(message: str):
-    """Логування у файл"""
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().isoformat()} {message}\n")
 
@@ -58,8 +57,11 @@ async def load_all_feeds(file_path="feeds.txt"):
 # ==== Відправка батчів ====
 async def send_batch(session, batch, stats):
     try:
-        payload = {"products": batch}
-        async with session.post(PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)) as resp:
+        payload = batch  # ✅ ВАЖЛИВО! Без обгортки "products"
+
+        async with session.post(
+            PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)
+        ) as resp:
             text = await resp.text()
 
             if resp.status != 200:
@@ -123,7 +125,7 @@ async def main():
 
         updates.append(
             {
-                "external_id": external_id,
+                "id": external_id,  # ✅ важливо: поле "id", не "external_id"
                 "price": new_price,
                 "quantity_in_stock": new_quantity,
                 "presence": new_presence,
