@@ -1,4 +1,3 @@
-# src/prom_updater.py
 import os
 import asyncio
 import aiohttp
@@ -28,7 +27,7 @@ def log_to_file(message: str):
         f.write(f"{datetime.now().isoformat()} {message}\n")
 
 
-# ==== Завантаження фідів ====
+# ==== Завантаження XML фідів ====
 async def fetch_feed(session, url: str):
     try:
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -54,18 +53,19 @@ async def load_all_feeds(file_path="feeds.txt"):
         return [offer for sublist in results for offer in sublist]
 
 
-# ==== Відправка батчів ====
+# ==== Надсилання оновлень ====
 async def send_batch(session, batch, stats):
     try:
-        payload = batch  # ✅ ВАЖЛИВО! Без обгортки "products"
-
+        payload = batch  # Уже список об'єктів
         async with session.post(
-            PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)
+            PROM_EDIT_URL,
+            headers=HEADERS,
+            data=orjson.dumps(payload),
         ) as resp:
             text = await resp.text()
 
             if resp.status != 200:
-                print(f"⚠️ Помилка Prom {resp.status}: {text}")
+                print(f"⚠️ Помилка Prom {resp.status}: {text[:200]}")
                 stats["errors"].append({"status": resp.status, "text": text[:200]})
                 return
 
@@ -114,23 +114,33 @@ async def main():
     for offer in offers:
         external_id = offer.get("id")
         price = offer.findtext("price")
-        quantity = offer.findtext("quantity")
+        available = offer.get("available", "").lower() == "true"
 
-        if not external_id or not price:
+        if not external_id:
             continue
 
-        new_price = float(price)
-        new_quantity = int(quantity) if quantity else 0
-        new_presence = "available" if new_quantity > 0 else "not_available"
+        new_price = float(price) if price else None
 
-        updates.append(
-            {
-                "id": external_id,  # ✅ важливо: поле "id", не "external_id"
-                "price": new_price,
-                "quantity_in_stock": new_quantity,
-                "presence": new_presence,
-            }
-        )
+        if available:
+            presence = "available"
+            status = "on_display"
+            in_stock = True
+        else:
+            presence = "not_available"
+            status = "draft"
+            in_stock = False
+
+        product_payload = {
+            "external_id": external_id,
+            "presence": presence,
+            "status": status,
+            "in_stock": in_stock,
+        }
+
+        if new_price is not None:
+            product_payload["price"] = new_price
+
+        updates.append(product_payload)
 
     print(f"🛠️ Підготовлено {len(updates)} оновлень для Prom")
 
