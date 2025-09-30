@@ -2,19 +2,22 @@ import os
 import json
 import requests
 import xml.etree.ElementTree as ET
+import time
 
 API_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
 API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 FEEDS_FILE = "feeds.txt"
-BATCH_SIZE = 100  # скільки товарів відправляти за раз
+BATCH_SIZE = 50  # зменшено для швидшої обробки
+REQUEST_TIMEOUT = 30  # таймаут для запитів
+DELAY_BETWEEN_BATCHES = 0.5  # затримка між партіями
 
 def parse_feed(url):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
         }
-        response = requests.get(url, timeout=30, headers=headers)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT, headers=headers)
         response.raise_for_status()
         root = ET.fromstring(response.content)
 
@@ -66,7 +69,7 @@ def parse_feed(url):
         print(f"❌ Помилка при обробці фіду {url}: {e}")
         return
 
-def send_updates(batch):
+def send_updates(batch, batch_num, total_batches):
     headers = {
         "Authorization": f"Bearer {API_TOKEN}",
         "Content-Type": "application/json",
@@ -86,16 +89,25 @@ def send_updates(batch):
 
         payload.append(obj)
 
-    print(f"\n➡️ Відправляю {len(payload)} товарів:")
-    print(json.dumps(payload[:3], indent=2, ensure_ascii=False), "...")
+    print(f"\n🔄 Партія {batch_num}/{total_batches} ({len(payload)} товарів)")
 
-    response = requests.post(API_URL, headers=headers, json=payload)
-
-    print(f"📥 Статус: {response.status_code}")
     try:
-        print("📥 Відповідь:", response.json())
-    except:
-        print("📥 Відповідь (text):", response.text)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        
+        if response.status_code == 200:
+            print(f"✅ Партія {batch_num} успішно оновлена")
+        else:
+            print(f"❌ Партія {batch_num} - помилка {response.status_code}")
+            try:
+                error_data = response.json()
+                print(f"Деталі помилки: {error_data}")
+            except:
+                print(f"Відповідь: {response.text[:200]}")
+                
+    except requests.exceptions.Timeout:
+        print(f"⚠️ Таймаут для партії {batch_num}")
+    except Exception as e:
+        print(f"❌ Помилка для партії {batch_num}: {e}")
 
 def main():
     if not API_TOKEN:
@@ -112,8 +124,9 @@ def main():
     all_updates = []
     successful_feeds = 0
 
+    print("🔄 Збір даних з фідів...")
     for url in feed_urls:
-        print(f"🔄 Обробка фіда: {url}")
+        print(f"🔄 Обробка фіду: {url}")
         feed_count = 0
         for product in parse_feed(url):
             all_updates.append(product)
@@ -123,7 +136,7 @@ def main():
             successful_feeds += 1
             print(f"✅ Фід {url}: {feed_count} товарів")
 
-    print(f"\n📊 Підсумок:")
+    print(f"\n📊 Підсумок збору:")
     print(f"✅ Успішних фідів: {successful_feeds}/{len(feed_urls)}")
     print(f"📦 Загальна кількість товарів: {len(all_updates)}")
 
@@ -131,12 +144,27 @@ def main():
         print("❌ Немає товарів для оновлення!")
         return
 
+    # Розрахунок партій
+    total_batches = (len(all_updates) - 1) // BATCH_SIZE + 1
+    print(f"\n🚀 Починаємо оновлення {len(all_updates)} товарів у {total_batches} партіях...")
+    
+    start_time = time.time()
+    
     for i in range(0, len(all_updates), BATCH_SIZE):
         batch = all_updates[i:i+BATCH_SIZE]
-        print(f"\n🔄 Обробка партії {i//BATCH_SIZE + 1}/{(len(all_updates)-1)//BATCH_SIZE + 1}")
-        send_updates(batch)
-
-    print("\n✅ Оновлення завершено.")
+        batch_num = i // BATCH_SIZE + 1
+        
+        send_updates(batch, batch_num, total_batches)
+        
+        # Затримка між партіями (крім останньої)
+        if batch_num < total_batches:
+            time.sleep(DELAY_BETWEEN_BATCHES)
+    
+    end_time = time.time()
+    duration = end_time - start_time
+    
+    print(f"\n✅ Оновлення завершено за {duration:.1f} секунд")
+    print(f"📊 Середня швидкість: {len(all_updates)/duration:.1f} товарів/сек")
 
 if __name__ == "__main__":
     main()
