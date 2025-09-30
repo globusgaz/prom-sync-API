@@ -8,9 +8,10 @@ API_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
 API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 FEEDS_FILE = "feeds.txt"
-BATCH_SIZE = 50  # зменшено для швидшої обробки
-REQUEST_TIMEOUT = 30  # таймаут для запитів
-DELAY_BETWEEN_BATCHES = 0.5  # затримка між партіями
+BATCH_SIZE = 20  # зменшено для швидшої обробки
+REQUEST_TIMEOUT = 30
+DELAY_BETWEEN_BATCHES = 1.0  # 1 секунда між партіями
+MAX_PRODUCTS = 1000  # обмеження для тесту
 
 def parse_feed(url):
     try:
@@ -89,7 +90,7 @@ def send_updates(batch, batch_num, total_batches):
 
         payload.append(obj)
 
-    print(f"\n🔄 Партія {batch_num}/{total_batches} ({len(payload)} товарів)")
+    print(f"🔄 Партія {batch_num}/{total_batches} ({len(payload)} товарів)")
 
     try:
         response = requests.post(API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
@@ -100,9 +101,9 @@ def send_updates(batch, batch_num, total_batches):
             print(f"❌ Партія {batch_num} - помилка {response.status_code}")
             try:
                 error_data = response.json()
-                print(f"Деталі помилки: {error_data}")
+                print(f"Деталі: {error_data}")
             except:
-                print(f"Відповідь: {response.text[:200]}")
+                print(f"Відповідь: {response.text[:100]}")
                 
     except requests.exceptions.Timeout:
         print(f"⚠️ Таймаут для партії {batch_num}")
@@ -143,6 +144,11 @@ def main():
     if not all_updates:
         print("❌ Немає товарів для оновлення!")
         return
+
+    # Обмеження для швидкої роботи
+    if len(all_updates) > MAX_PRODUCTS:
+        print(f"⚠️ Обмежуємо до {MAX_PRODUCTS} товарів для швидкої роботи")
+        all_updates = all_updates[:MAX_PRODUCTS]
 
     # Розрахунок партій
     total_batches = (len(all_updates) - 1) // BATCH_SIZE + 1
