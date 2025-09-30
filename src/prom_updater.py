@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_EDIT_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
+PROM_EDIT_URL = "https://my.prom.ua/api/v1/products/edit"
 
 HEADERS = {
     "Authorization": f"Bearer {PROM_API_TOKEN}",
@@ -54,11 +54,8 @@ async def load_all_feeds(file_path="feeds.txt"):
 
 async def send_batch(session, batch, stats):
     try:
-        async with session.post(
-            PROM_EDIT_URL,
-            headers=HEADERS,
-            data=orjson.dumps(batch)
-        ) as resp:
+        payload = {"products": batch}
+        async with session.post(PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)) as resp:
             text = await resp.text()
 
             if resp.status != 200:
@@ -103,38 +100,40 @@ async def update_products(updates):
 
 async def main():
     offers = await load_all_feeds()
-    print(f"📦 Загальна кількість товарів у фідах: {len(offers)}")
+    total = len(offers)
+    print(f"📦 Загальна кількість товарів у фідах: {total}")
 
     updates = []
     for offer in offers:
         external_id = offer.get("id")
         price = offer.findtext("price")
-        available = offer.get("available", "false").lower() == "true"
+        available = offer.get("available")
 
         if not external_id:
             continue
 
-        update_item = {"id": external_id}
+        update_obj = {"id": external_id}
 
-        if available:
-            if price:
-                try:
-                    update_item["price"] = float(price)
-                except ValueError:
-                    pass
-            update_item["presence"] = "available"
-            update_item["status"] = "on_display"
+        # Наявність -> статус
+        if available == "true":
+            update_obj["status"] = "on_display"
         else:
-            update_item["presence"] = "not_available"
-            update_item["status"] = "draft"
-            update_item["quantity_in_stock"] = 0
+            update_obj["status"] = "draft"
 
-        updates.append(update_item)
+        # Якщо товар в наявності – оновлюємо ціну
+        if available == "true" and price:
+            try:
+                update_obj["price"] = float(price)
+            except:
+                pass
+
+        updates.append(update_obj)
 
     print(f"🛠️ Підготовлено {len(updates)} оновлень для Prom")
 
     stats = await update_products(updates)
 
+    # ==== ЗВІТ ====
     report = [
         "===== ЗВІТ =====",
         f"Перевірено товарів: {stats['checked']}",
