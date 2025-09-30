@@ -1,156 +1,107 @@
 import os
-import asyncio
-import aiohttp
-import lxml.etree as ET
-import orjson
-from datetime import datetime
-from dotenv import load_dotenv
+import json
+import requests
+import xml.etree.ElementTree as ET
 
-load_dotenv()
+API_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
+API_TOKEN = os.getenv("PROM_API_TOKEN")
 
-PROM_API_TOKEN = os.getenv("PROM_API_TOKEN")
-PROM_EDIT_URL = "https://my.prom.ua/api/v1/products/edit"
+FEEDS_FILE = "feeds.txt"
+BATCH_SIZE = 100  # скільки товарів відправляти за раз
 
-HEADERS = {
-    "Authorization": f"Bearer {PROM_API_TOKEN}",
-    "Content-Type": "application/json",
-    "Accept-Language": "uk",
-}
-
-BATCH_SIZE = 100
-MAX_CONCURRENT = 5
-LOG_FILE = "prom_update.log"
-
-
-def log_to_file(message: str):
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{datetime.now().isoformat()} {message}\n")
-
-
-async def fetch_feed(session, url: str):
+def parse_feed(url):
     try:
-        async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-            resp.raise_for_status()
-            text = await resp.text()
-            root = ET.fromstring(text.encode("utf-8"))
-            offers = root.findall(".//offer")
-            print(f"✅ {url} — {len(offers)} товарів")
-            return offers
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+
+        for offer in root.findall(".//offer"):
+            product_id = offer.get("id")
+            available = offer.get("available", "false").lower()
+            price_el = offer.find("price")
+
+            # Ціна (якщо є)
+            price = None
+            if price_el is not None and price_el.text:
+                try:
+                    price = float(price_el.text.strip())
+                except ValueError:
+                    price = None
+
+            # Статус
+            if available == "true":
+                presence = "available"
+                quantity_in_stock = 1
+            else:
+                presence = "not_available"
+                quantity_in_stock = 0
+
+            yield {
+                "id": product_id,
+                "price": price,
+                "presence": presence,
+                "quantity_in_stock": quantity_in_stock
+            }
     except Exception as e:
-        print(f"❌ Помилка парсингу {url}: {e}")
-        return []
+        print(f"❌ Помилка при обробці фіду {url}: {e}")
 
+def send_updates(batch):
+    headers = {
+        "Authorization": f"Bearer {API_TOKEN}",
+        "Content-Type": "application/json",
+        "X-LANGUAGE": "uk"
+    }
 
-async def load_all_feeds(file_path="feeds.txt"):
-    with open(file_path, "r") as f:
-        urls = [line.strip() for line in f if line.strip()]
+    # Формуємо об'єкти тільки з потрібними полями
+    payload = []
+    for item in batch:
+        obj = {"id": item["id"]}
 
-    print(f"🔗 Found {len(urls)} feed URLs in {file_path}")
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_feed(session, url) for url in urls]
-        results = await asyncio.gather(*tasks)
-        return [offer for sublist in results for offer in sublist]
+        if item["price"] is not None:
+            obj["price"] = item["price"]
 
+        obj["presence"] = item["presence"]
+        obj["quantity_in_stock"] = item["quantity_in_stock"]
 
-async def send_batch(session, batch, stats):
+        payload.append(obj)
+
+    print(f"\n➡️ Відправляю {len(payload)} товарів:")
+    print(json.dumps(payload[:3], indent=2, ensure_ascii=False), "...")
+
+    response = requests.post(API_URL, headers=headers, json=payload)
+
+    print(f"📥 Статус: {response.status_code}")
     try:
-        payload = {"products": batch}
-        async with session.post(PROM_EDIT_URL, headers=HEADERS, data=orjson.dumps(payload)) as resp:
-            text = await resp.text()
+        print("📥 Відповідь:", response.json())
+    except:
+        print("📥 Відповідь (text):", response.text)
 
-            if resp.status != 200:
-                print(f"⚠️ Помилка Prom {resp.status}: {text}")
-                stats["errors"].append({"status": resp.status, "text": text[:200]})
-                return
+def main():
+    if not API_TOKEN:
+        print("❌ Токен PROM_API_TOKEN не знайдено!")
+        return
 
-            try:
-                data = orjson.loads(text)
-                processed = data.get("processed_ids", [])
-                errors = data.get("errors", {})
+    if not os.path.exists(FEEDS_FILE):
+        print(f"❌ Файл {FEEDS_FILE} не знайдено!")
+        return
 
-                stats["updated"] += len(processed)
-                if errors:
-                    stats["errors"].append(errors)
+    with open(FEEDS_FILE, "r") as f:
+        feed_urls = [line.strip() for line in f if line.strip()]
 
-            except Exception:
-                print(f"⚠️ Не вдалося розпарсити відповідь: {text[:200]}")
-                stats["errors"].append({"parse_error": text[:200]})
+    all_updates = []
 
-    except Exception as e:
-        print(f"⚠️ Виняток при відправці batch: {e}")
-        stats["errors"].append({"exception": str(e)})
+    for url in feed_urls:
+        print(f"🔄 Обробка фіда: {url}")
+        for product in parse_feed(url):
+            all_updates.append(product)
 
+    print(f"\n✅ Зібрано {len(all_updates)} товарів для оновлення")
 
-async def update_products(updates):
-    if not updates:
-        print("🚫 Немає оновлень")
-        return {"checked": 0, "updated": 0, "errors": []}
+    for i in range(0, len(all_updates), BATCH_SIZE):
+        batch = all_updates[i:i+BATCH_SIZE]
+        send_updates(batch)
 
-    batches = [updates[i:i + BATCH_SIZE] for i in range(0, len(updates), BATCH_SIZE)]
-
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT)
-    stats = {"checked": len(updates), "updated": 0, "errors": []}
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [send_batch(session, batch, stats) for batch in batches]
-        await asyncio.gather(*tasks)
-
-    return stats
-
-
-async def main():
-    offers = await load_all_feeds()
-    total = len(offers)
-    print(f"📦 Загальна кількість товарів у фідах: {total}")
-
-    updates = []
-    for offer in offers:
-        external_id = offer.get("id")
-        price = offer.findtext("price")
-        available = offer.get("available")
-
-        if not external_id:
-            continue
-
-        update_obj = {"id": external_id}
-
-        # Наявність -> статус
-        if available == "true":
-            update_obj["status"] = "on_display"
-        else:
-            update_obj["status"] = "draft"
-
-        # Якщо товар в наявності – оновлюємо ціну
-        if available == "true" and price:
-            try:
-                update_obj["price"] = float(price)
-            except:
-                pass
-
-        updates.append(update_obj)
-
-    print(f"🛠️ Підготовлено {len(updates)} оновлень для Prom")
-
-    stats = await update_products(updates)
-
-    # ==== ЗВІТ ====
-    report = [
-        "===== ЗВІТ =====",
-        f"Перевірено товарів: {stats['checked']}",
-        f"Оновлено товарів: {stats['updated']}",
-    ]
-
-    if stats["errors"]:
-        report.append(f"⚠️ Помилки: {len(stats['errors'])}")
-        for err in stats["errors"][:10]:
-            report.append(f"  - {err}")
-
-    report.append("================")
-    report_text = "\n".join(report)
-
-    print(report_text)
-    log_to_file(report_text)
-
+    print("\n✅ Оновлення завершено.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
