@@ -11,7 +11,10 @@ BATCH_SIZE = 100  # скільки товарів відправляти за р
 
 def parse_feed(url):
     try:
-        response = requests.get(url, timeout=30)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        }
+        response = requests.get(url, timeout=30, headers=headers)
         response.raise_for_status()
         root = ET.fromstring(response.content)
 
@@ -42,8 +45,26 @@ def parse_feed(url):
                 "presence": presence,
                 "quantity_in_stock": quantity_in_stock
             }
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            print(f"⚠️ Фід {url} заблокований (403) - пропускаємо")
+        elif e.response.status_code == 404:
+            print(f"⚠️ Фід {url} не знайдено (404) - пропускаємо")
+        else:
+            print(f"❌ Помилка HTTP {e.response.status_code} для {url}")
+        return
+    except requests.exceptions.Timeout:
+        print(f"⚠️ Таймаут для {url} - пропускаємо")
+        return
+    except requests.exceptions.ConnectionError:
+        print(f"⚠️ Помилка з'єднання для {url} - пропускаємо")
+        return
+    except ET.ParseError as e:
+        print(f"❌ Помилка парсингу XML для {url}: {e}")
+        return
     except Exception as e:
         print(f"❌ Помилка при обробці фіду {url}: {e}")
+        return
 
 def send_updates(batch):
     headers = {
@@ -89,16 +110,30 @@ def main():
         feed_urls = [line.strip() for line in f if line.strip()]
 
     all_updates = []
+    successful_feeds = 0
 
     for url in feed_urls:
         print(f"🔄 Обробка фіда: {url}")
+        feed_count = 0
         for product in parse_feed(url):
             all_updates.append(product)
+            feed_count += 1
+        
+        if feed_count > 0:
+            successful_feeds += 1
+            print(f"✅ Фід {url}: {feed_count} товарів")
 
-    print(f"\n✅ Зібрано {len(all_updates)} товарів для оновлення")
+    print(f"\n📊 Підсумок:")
+    print(f"✅ Успішних фідів: {successful_feeds}/{len(feed_urls)}")
+    print(f"📦 Загальна кількість товарів: {len(all_updates)}")
+
+    if not all_updates:
+        print("❌ Немає товарів для оновлення!")
+        return
 
     for i in range(0, len(all_updates), BATCH_SIZE):
         batch = all_updates[i:i+BATCH_SIZE]
+        print(f"\n🔄 Обробка партії {i//BATCH_SIZE + 1}/{(len(all_updates)-1)//BATCH_SIZE + 1}")
         send_updates(batch)
 
     print("\n✅ Оновлення завершено.")
