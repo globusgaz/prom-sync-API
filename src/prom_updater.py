@@ -27,7 +27,6 @@ def log_to_file(message: str):
         f.write(f"{datetime.now().isoformat()} {message}\n")
 
 
-# ==== Завантаження XML фідів ====
 async def fetch_feed(session, url: str):
     try:
         async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
@@ -53,19 +52,17 @@ async def load_all_feeds(file_path="feeds.txt"):
         return [offer for sublist in results for offer in sublist]
 
 
-# ==== Надсилання оновлень ====
 async def send_batch(session, batch, stats):
     try:
-        payload = batch  # Уже список об'єктів
         async with session.post(
             PROM_EDIT_URL,
             headers=HEADERS,
-            data=orjson.dumps(payload),
+            data=orjson.dumps(batch)
         ) as resp:
             text = await resp.text()
 
             if resp.status != 200:
-                print(f"⚠️ Помилка Prom {resp.status}: {text[:200]}")
+                print(f"⚠️ Помилка Prom {resp.status}: {text}")
                 stats["errors"].append({"status": resp.status, "text": text[:200]})
                 return
 
@@ -104,49 +101,40 @@ async def update_products(updates):
     return stats
 
 
-# ==== Головна логіка ====
 async def main():
     offers = await load_all_feeds()
-    total = len(offers)
-    print(f"📦 Загальна кількість товарів у фідах: {total}")
+    print(f"📦 Загальна кількість товарів у фідах: {len(offers)}")
 
     updates = []
     for offer in offers:
         external_id = offer.get("id")
         price = offer.findtext("price")
-        available = offer.get("available", "").lower() == "true"
+        available = offer.get("available", "false").lower() == "true"
 
         if not external_id:
             continue
 
-        new_price = float(price) if price else None
+        update_item = {"id": external_id}
 
         if available:
-            presence = "available"
-            status = "on_display"
-            in_stock = True
+            if price:
+                try:
+                    update_item["price"] = float(price)
+                except ValueError:
+                    pass
+            update_item["presence"] = "available"
+            update_item["status"] = "on_display"
         else:
-            presence = "not_available"
-            status = "draft"
-            in_stock = False
+            update_item["presence"] = "not_available"
+            update_item["status"] = "draft"
+            update_item["quantity_in_stock"] = 0
 
-        product_payload = {
-            "external_id": external_id,
-            "presence": presence,
-            "status": status,
-            "in_stock": in_stock,
-        }
-
-        if new_price is not None:
-            product_payload["price"] = new_price
-
-        updates.append(product_payload)
+        updates.append(update_item)
 
     print(f"🛠️ Підготовлено {len(updates)} оновлень для Prom")
 
     stats = await update_products(updates)
 
-    # ==== Звіт ====
     report = [
         "===== ЗВІТ =====",
         f"Перевірено товарів: {stats['checked']}",
