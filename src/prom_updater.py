@@ -28,7 +28,7 @@ def parse_feed(url):
                 except ValueError:
                     price = None
 
-            # Статус
+            # Статус наявності
             if available == "true":
                 presence = "available"
                 quantity_in_stock = 1
