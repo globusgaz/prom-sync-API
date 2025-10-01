@@ -17,9 +17,9 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 10  # Маленькі батчі
-CONCURRENT_BATCHES = 1  # Тільки 1 запит за раз
-API_DELAY = 1.0  # Велика затримка між запитами
+BATCH_SIZE = 50  # Середні батчі
+CONCURRENT_BATCHES = 2  # 2 паралельних запити
+API_DELAY = 0.5  # Середня затримка між запитами
 
 # Заголовки для запитів до фідів
 HEADERS = {
@@ -171,16 +171,22 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int, 
 
 async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, batch: List[Dict[str, Any]], batch_idx: int) -> Tuple[int, int]:
     """Відправляє один батч і повертає (успішні, помилки)"""
-    # Формуємо payload
+    # Формуємо payload згідно з документацією Prom.ua
     payload = []
     for product in batch:
-        item = {"id": product["id"]}
-        if "price" in product:
-            item["price"] = product["price"]
+        item = {
+            "external_id": product["id"],  # external_id замість id
+            "price": product.get("price"),  # ціна
+        }
+        
+        # Додаємо наявність тільки якщо є чіткий сигнал
         if product.get("_presence_sure", False):
             item["presence"] = product["presence"]
             item["quantity_in_stock"] = product["quantity_in_stock"]
             item["presence_sure"] = True
+        
+        # Видаляємо None значення
+        item = {k: v for k, v in item.items() if v is not None}
         payload.append(item)
     
     # Відправка з 1 ретраєм
@@ -188,6 +194,25 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
         try:
             status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
             if 200 <= status < 300:
+                # Детальне логування успішних оновлень
+                print(f"✅ Партія {batch_idx}: HTTP {status}")
+                try:
+                    response_data = json.loads(response_text)
+                    if "processed_ids" in response_data:
+                        processed = len(response_data["processed_ids"])
+                        print(f"📊 Оброблено: {processed}/{len(batch)} товарів")
+                        if "errors" in response_data and response_data["errors"]:
+                            error_count = len(response_data["errors"])
+                            print(f"⚠️ Помилок: {error_count}")
+                            # Показуємо перші помилки
+                            for i, (pid, error) in enumerate(list(response_data["errors"].items())[:3]):
+                                print(f"  ❌ {pid}: {error}")
+                            if error_count > 3:
+                                print(f"  ... та ще {error_count - 3} помилок")
+                    else:
+                        print(f"📋 Відповідь: {response_text[:200]}")
+                except json.JSONDecodeError:
+                    print(f"📋 Відповідь: {response_text[:200]}")
                 return len(batch), 0
             else:
                 # Детальне логування помилок
@@ -197,39 +222,49 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
                 if status in (403, 429) or 500 <= status <= 599:
                     if attempt == 0:
                         print(f"⚠️ Партія {batch_idx}: ретрай через {status}")
-                        await asyncio.sleep(2)  # Збільшена затримка
+                        await asyncio.sleep(2)
                         continue
                 # Інші помилки - не ретраїмо
                 return 0, len(batch)
         except Exception as e:
             print(f"❌ Партія {batch_idx}: Exception {e}")
             if attempt == 0:
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
                 continue
             return 0, len(batch)
     
     return 0, len(batch)
 
 async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua послідовно з затримками."""
+    """Відправляє оновлення на Prom.ua з обмеженою паралельністю."""
     batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
     total_batches = len(batches)
     successful = 0
     failed = 0
     
-    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (послідовно з затримками)")
+    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (паралельно {CONCURRENT_BATCHES})")
     
-    # Послідовна обробка замість паралельної
-    for i, batch in enumerate(batches, 1):
-        print(f"🔄 Партія {i}/{total_batches} ({len(batch)} товарів)")
-        succ, fail = await send_single_batch(session, client, batch, i)
-        successful += succ
-        failed += fail
-        
-        # Затримка між батчами
-        if i < total_batches:
-            print(f"⏳ Затримка {API_DELAY}s...")
-            await asyncio.sleep(API_DELAY)
+    # Семафор для обмеження кількості паралельних запитів
+    semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
+    
+    async def process_batch(batch_idx: int, batch: List[Dict[str, Any]]) -> Tuple[int, int]:
+        async with semaphore:
+            print(f"🔄 Партія {batch_idx}/{total_batches} ({len(batch)} товарів)")
+            return await send_single_batch(session, client, batch, batch_idx)
+    
+    # Запускаємо всі батчі паралельно з обмеженням
+    tasks = [process_batch(i, batch) for i, batch in enumerate(batches, 1)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Підрахунок результатів
+    for result in results:
+        if isinstance(result, Exception):
+            failed += 1
+            print(f"❌ Помилка батча: {result}")
+        else:
+            succ, fail = result
+            successful += succ
+            failed += fail
     
     print(f"\n📊 Підсумок оновлення:")
     print(f"✅ Успішно: {successful} товарів")
