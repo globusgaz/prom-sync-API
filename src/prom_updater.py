@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import time
 import asyncio
 import aiohttp
+from hashlib import md5
 from typing import List, Dict, Any, Tuple, Optional
 
 # ---------------- Конфіг ----------------
@@ -74,9 +75,17 @@ def _safe_float(text: Optional[str]) -> Optional[float]:
     except Exception:
         return None
 
+def _text_of(node: Optional[ET.Element]) -> Optional[str]:
+    return node.text.strip() if node is not None and node.text else None
+
+def _starts_with_fpref(x: str) -> bool:
+    return len(x) >= 3 and x[0] == "f" and x[1].isdigit() and x[2] == "_"
+
 # ---------------- Парсинг фідів ----------------
-# Критично: external_id для API беремо з <vendorCode> (у вашому YML це вже fN_...)
-# Наявність міняємо лише коли є чіткі сигнали, інакше presence/quantity не надсилаємо взагалі.
+# external_id для API має співпасти з тим, що в YML:
+# - якщо у vendorCode вже fN_... → беремо як є
+# - інакше якщо offer/@id вже fN_... → беремо як є
+# - інакше додаємо префікс f{feed_index}_ до (vendorCode або offer_id або md5(offer))
 
 def _infer_availability(offer: ET.Element) -> Tuple[Optional[str], Optional[int], bool]:
     """
@@ -122,8 +131,17 @@ def _extract_price(offer: ET.Element) -> Optional[float]:
                 return v
     return None
 
-def _text_of(node: Optional[ET.Element]) -> Optional[str]:
-    return node.text.strip() if node is not None and node.text else None
+def _build_external_id(offer: ET.Element, feed_index: int) -> Optional[str]:
+    offer_id = offer.get("id") or ""
+    vendor_code = _text_of(offer.find("vendorCode")) or ""
+
+    if vendor_code and _starts_with_fpref(vendor_code):
+        return vendor_code
+    if offer_id and _starts_with_fpref(offer_id):
+        return offer_id
+
+    base = vendor_code or offer_id or md5(ET.tostring(offer)).hexdigest()
+    return f"f{feed_index}_{base}" if base else None
 
 async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) -> Tuple[bool, List[Dict[str, Any]]]:
     try:
@@ -137,12 +155,9 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) 
 
             products: List[Dict[str, Any]] = []
             for offer in offers:
-                # external_id = vendorCode (у вашому YML це вже f{feed}_..., напр. f4_2736731)
-                vc = _text_of(offer.find("vendorCode"))
-                if not vc:
-                    # якщо немає vendorCode — пропускаємо, щоб не зламати відповідність
+                external_id = _build_external_id(offer, feed_index)
+                if not external_id:
                     continue
-                external_id = vc
 
                 price = _extract_price(offer)
                 presence, qty, sure = _infer_availability(offer)
