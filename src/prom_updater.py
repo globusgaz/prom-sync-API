@@ -53,7 +53,8 @@ def has_changed(product, old_state):
         old.get("quantity_in_stock") != product.get("quantity_in_stock")
     )
 
-async def parse_feed(session, url):
+async def parse_feed(session, url, feed_index):
+    """Збір товарів з фіду з додаванням префікса як у YML генераторі"""
     try:
         async with session.get(url, headers=HEADERS, timeout=180) as response:
             if response.status != 200:
@@ -68,6 +69,9 @@ async def parse_feed(session, url):
                 product_id = offer.get("id")
                 if not product_id:
                     continue
+                
+                # ДОДАЄМО ПРЕФІКС як в YML генераторі
+                product_id_with_prefix = f"f{feed_index}_{product_id}"
                     
                 available = offer.get("available", "false").lower()
                 price_el = offer.find("price")
@@ -87,7 +91,7 @@ async def parse_feed(session, url):
                     quantity_in_stock = 0
 
                 products.append({
-                    "id": product_id,
+                    "id": product_id_with_prefix,
                     "price": price,
                     "presence": presence,
                     "quantity_in_stock": quantity_in_stock
@@ -173,8 +177,8 @@ async def main_async():
     print("\n🔄 Збір даних з фідів...")
     
     async with aiohttp.ClientSession() as session:
-        # Паралельний збір фідів
-        tasks = [parse_feed(session, url) for url in feed_urls]
+        # Паралельний збір фідів з правильними індексами
+        tasks = [parse_feed(session, url, i+1) for i, url in enumerate(feed_urls)]
         results = await asyncio.gather(*tasks)
         
         for url, (success, products) in zip(feed_urls, results):
