@@ -54,7 +54,6 @@ def has_changed(product, old_state):
     )
 
 async def parse_feed(session, url):
-    """Точна копія логіки з yml-generator"""
     try:
         async with session.get(url, headers=HEADERS, timeout=180) as response:
             if response.status != 200:
@@ -110,21 +109,45 @@ async def send_updates(session, batch, batch_num, total_batches):
     payload = []
     for item in batch:
         obj = {"id": item["id"]}
+        
         if item.get("price") is not None:
             obj["price"] = item["price"]
+        
         obj["presence"] = item["presence"]
+        obj["presence_sure"] = True
         obj["quantity_in_stock"] = item["quantity_in_stock"]
+        
         payload.append(obj)
 
     print(f"🔄 Партія {batch_num}/{total_batches} ({len(payload)} товарів)")
 
     try:
         async with session.post(API_URL, headers=headers, json=payload, timeout=120) as response:
+            response_text = await response.text()
+            
             if response.status == 200:
-                print(f"✅ Партія {batch_num}")
+                try:
+                    result = json.loads(response_text)
+                    processed = len(result.get("processed_ids", []))
+                    errors = result.get("errors", {})
+                    
+                    if errors:
+                        print(f"⚠️ Партія {batch_num}: оброблено {processed}/{len(payload)}, помилок: {len(errors)}")
+                        # Виводимо перші 3 помилки
+                        for i, (ext_id, error) in enumerate(list(errors.items())[:3]):
+                            print(f"  ❌ {ext_id}: {error}")
+                    else:
+                        print(f"✅ Партія {batch_num}: {processed}/{len(payload)}")
+                        
+                    # Для першої партії - повний вивід
+                    if batch_num == 1:
+                        print(f"📋 Відповідь API: {json.dumps(result, ensure_ascii=False, indent=2)[:500]}")
+                        
+                except json.JSONDecodeError:
+                    print(f"❌ Партія {batch_num} - не JSON відповідь: {response_text[:200]}")
             else:
-                text = await response.text()
-                print(f"❌ Партія {batch_num} - помилка {response.status}")
+                print(f"❌ Партія {batch_num} - HTTP {response.status}: {response_text[:200]}")
+                    
     except Exception as e:
         print(f"❌ Партія {batch_num}: {e}")
 
@@ -149,7 +172,6 @@ async def main_async():
 
     print("\n🔄 Збір даних з фідів...")
     
-    # Створюємо сесію БЕЗ ClientTimeout - використовуємо числові таймаути
     async with aiohttp.ClientSession() as session:
         # Паралельний збір фідів
         tasks = [parse_feed(session, url) for url in feed_urls]
