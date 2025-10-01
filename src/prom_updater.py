@@ -189,13 +189,20 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
             status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
             if 200 <= status < 300:
                 return len(batch), 0
-            elif status in (403, 429) or 500 <= status <= 599:
-                if attempt == 0:
-                    await asyncio.sleep(1)
-                    continue
-            # Інші помилки - не ретраїмо
-            return 0, len(batch)
+            else:
+                # Детальне логування помилок
+                print(f"❌ Партія {batch_idx}: HTTP {status}")
+                if response_text:
+                    print(f"📋 Відповідь: {response_text[:300]}")
+                if status in (403, 429) or 500 <= status <= 599:
+                    if attempt == 0:
+                        print(f"⚠️ Партія {batch_idx}: ретрай через {status}")
+                        await asyncio.sleep(1)
+                        continue
+                # Інші помилки - не ретраїмо
+                return 0, len(batch)
         except Exception as e:
+            print(f"❌ Партія {batch_idx}: Exception {e}")
             if attempt == 0:
                 await asyncio.sleep(1)
                 continue
