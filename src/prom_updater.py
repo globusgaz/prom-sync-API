@@ -17,8 +17,8 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 25  # Зменшено з 50
-API_DELAY = 0.2  # Збільшено затримку
+BATCH_SIZE = 10  # Маленькі батчі
+API_DELAY = 0.1  # Мінімальна затримка
 
 # Заголовки для запитів до фідів
 HEADERS = {
@@ -169,52 +169,66 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int, 
     return False, []
 
 async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua з обмеженими ретраями."""
-    failed_products = []
+    """Відправляє оновлення на Prom.ua маленькими батчами."""
+    batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
+    total_batches = len(batches)
+    successful = 0
+    failed = 0
     
-    for i, product in enumerate(products, 1):
-        if i % 100 == 0:
-            print(f"🔄 Оброблено {i}/{len(products)} товарів")
+    for i, batch in enumerate(batches, 1):
+        print(f"🔄 Партія {i}/{total_batches} ({len(batch)} товарів)")
         
-        # Формуємо payload для одного товару
-        payload = [{"id": product["id"]}]
-        if "price" in product:
-            payload[0]["price"] = product["price"]
-        if product.get("_presence_sure", False):
-            payload[0]["presence"] = product["presence"]
-            payload[0]["quantity_in_stock"] = product["quantity_in_stock"]
-            payload[0]["presence_sure"] = True
+        # Формуємо payload
+        payload = []
+        for product in batch:
+            item = {"id": product["id"]}
+            if "price" in product:
+                item["price"] = product["price"]
+            if product.get("_presence_sure", False):
+                item["presence"] = product["presence"]
+                item["quantity_in_stock"] = product["quantity_in_stock"]
+                item["presence_sure"] = True
+            payload.append(item)
         
-        # Ретраї для одного товару
-        max_retries = 3
+        # Відправка з 1 ретраєм
         success = False
-        for attempt in range(max_retries + 1):
+        for attempt in range(2):  # 0 і 1 ретрай
             try:
                 status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
                 if 200 <= status < 300:
+                    print(f"✅ Партія {i}: OK")
+                    successful += len(batch)
                     success = True
                     break
                 elif status in (403, 429) or 500 <= status <= 599:
-                    if attempt < max_retries:
-                        await asyncio.sleep(2 ** attempt)  # 1, 2, 4 секунди
+                    if attempt == 0:
+                        print(f"⚠️ Партія {i}: HTTP {status}, ретрай...")
+                        await asyncio.sleep(1)
                         continue
+                else:
+                    print(f"❌ Партія {i}: HTTP {status}")
+                    break
             except Exception as e:
-                if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)
+                if attempt == 0:
+                    print(f"⚠️ Партія {i}: {e}, ретрай...")
+                    await asyncio.sleep(1)
                     continue
+                else:
+                    print(f"❌ Партія {i}: {e}")
+                    break
         
         if not success:
-            failed_products.append(product["id"])
-            if len(failed_products) <= 5:
-                print(f"❌ Помилка для {product['id']}")
+            failed += len(batch)
+            if failed <= 20:  # Показуємо тільки перші 20 помилок
+                print(f"❌ Партія {i}: не вдалося оновити")
         
-        # Затримка між запитами
-        await asyncio.sleep(API_DELAY)
+        # Затримка між батчами
+        if i < total_batches:
+            await asyncio.sleep(API_DELAY)
     
-    if failed_products:
-        print(f"⚠️ Не вдалося оновити {len(failed_products)} товарів")
-        if len(failed_products) <= 10:
-            print(f"ID: {', '.join(failed_products)}")
+    print(f"\n📊 Підсумок оновлення:")
+    print(f"✅ Успішно: {successful} товарів")
+    print(f"❌ Помилок: {failed} товарів")
 
 async def main_async() -> int:
     """Основна функція"""
