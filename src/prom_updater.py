@@ -10,10 +10,9 @@ API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 FEEDS_FILE = "feeds.txt"
 STATE_FILE = "product_state.json"
-BATCH_SIZE = 100  # збільшено
-REQUEST_TIMEOUT = 120
-DELAY_BETWEEN_BATCHES = 0.3  # зменшено
-CONCURRENT_REQUESTS = 3  # паралельні запити до API
+BATCH_SIZE = 100
+DELAY_BETWEEN_BATCHES = 0.3
+CONCURRENT_REQUESTS = 3
 
 HEADERS = {
     "User-Agent": (
@@ -55,8 +54,9 @@ def has_changed(product, old_state):
     )
 
 async def parse_feed(session, url):
+    """Точна копія логіки з yml-generator"""
     try:
-        async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT) as response:
+        async with session.get(url, headers=HEADERS, timeout=180) as response:
             if response.status != 200:
                 print(f"❌ {url} — HTTP {response.status}")
                 return False, []
@@ -96,9 +96,6 @@ async def parse_feed(session, url):
             
             return True, products
             
-    except asyncio.TimeoutError:
-        print(f"❌ Таймаут для {url}")
-        return False, []
     except Exception as e:
         print(f"❌ {url}: {e}")
         return False, []
@@ -122,12 +119,12 @@ async def send_updates(session, batch, batch_num, total_batches):
     print(f"🔄 Партія {batch_num}/{total_batches} ({len(payload)} товарів)")
 
     try:
-        async with session.post(API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT) as response:
+        async with session.post(API_URL, headers=headers, json=payload, timeout=120) as response:
             if response.status == 200:
                 print(f"✅ Партія {batch_num}")
             else:
                 text = await response.text()
-                print(f"❌ Партія {batch_num} - помилка {response.status}: {text[:100]}")
+                print(f"❌ Партія {batch_num} - помилка {response.status}")
     except Exception as e:
         print(f"❌ Партія {batch_num}: {e}")
 
@@ -152,12 +149,10 @@ async def main_async():
 
     print("\n🔄 Збір даних з фідів...")
     
+    # Створюємо сесію БЕЗ ClientTimeout - використовуємо числові таймаути
     async with aiohttp.ClientSession() as session:
         # Паралельний збір фідів
-        tasks = []
-        for url in feed_urls:
-            tasks.append(parse_feed(session, url))
-        
+        tasks = [parse_feed(session, url) for url in feed_urls]
         results = await asyncio.gather(*tasks)
         
         for url, (success, products) in zip(feed_urls, results):
@@ -170,6 +165,14 @@ async def main_async():
 
         print(f"\n📊 Підсумок збору:")
         print(f"✅ Успішних фідів: {successful_feeds}/{len(feed_urls)}")
+        
+        if failed_feeds:
+            print(f"❌ Недоступних фідів: {len(failed_feeds)}")
+            for url in failed_feeds:
+                print(f"  - {url}")
+            print(f"\n🛑 ЗУПИНКА: Не всі фіди доступні! Оновлення не виконується.")
+            return
+        
         print(f"📦 Загальна кількість товарів: {len(all_products)}")
 
         if not all_products:
@@ -178,8 +181,8 @@ async def main_async():
 
         changed_products = [p for p in all_products if has_changed(p, old_state)]
         
-        print(f"\n🔍 Аналіз:")
-        print(f"📦 Всього: {len(all_products)}")
+        print(f"\n🔍 Аналіз змін:")
+        print(f"📦 Всього товарів: {len(all_products)}")
         print(f"🔄 Змінилось: {len(changed_products)}")
 
         if not changed_products:
@@ -210,8 +213,10 @@ async def main_async():
         duration = end_time - start_time
         
         save_current_state(all_products)
+        print(f"\n💾 Стан збережено: {len(all_products)} товарів")
         print(f"\n✅ Завершено за {duration:.1f}с ({duration/60:.1f}хв)")
-        print(f"📊 Швидкість: {len(changed_products)/duration:.1f} товарів/сек")
+        if changed_products:
+            print(f"📊 Швидкість: {len(changed_products)/duration:.1f} товарів/сек")
 
 def main():
     asyncio.run(main_async())
