@@ -17,8 +17,9 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 10  # Маленькі батчі
-API_DELAY = 0.1  # Мінімальна затримка
+BATCH_SIZE = 100  # Великі батчі
+CONCURRENT_BATCHES = 5  # 5 паралельних запитів
+API_DELAY = 0.05  # Мінімальна затримка
 
 # Заголовки для запитів до фідів
 HEADERS = {
@@ -168,63 +169,70 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int, 
     print(f"❌ {clean_url}: вичерпано спроби")
     return False, []
 
+async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, batch: List[Dict[str, Any]], batch_idx: int) -> Tuple[int, int]:
+    """Відправляє один батч і повертає (успішні, помилки)"""
+    # Формуємо payload
+    payload = []
+    for product in batch:
+        item = {"id": product["id"]}
+        if "price" in product:
+            item["price"] = product["price"]
+        if product.get("_presence_sure", False):
+            item["presence"] = product["presence"]
+            item["quantity_in_stock"] = product["quantity_in_stock"]
+            item["presence_sure"] = True
+        payload.append(item)
+    
+    # Відправка з 1 ретраєм
+    for attempt in range(2):
+        try:
+            status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
+            if 200 <= status < 300:
+                return len(batch), 0
+            elif status in (403, 429) or 500 <= status <= 599:
+                if attempt == 0:
+                    await asyncio.sleep(1)
+                    continue
+            # Інші помилки - не ретраїмо
+            return 0, len(batch)
+        except Exception as e:
+            if attempt == 0:
+                await asyncio.sleep(1)
+                continue
+            return 0, len(batch)
+    
+    return 0, len(batch)
+
 async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua маленькими батчами."""
+    """Відправляє оновлення на Prom.ua з паралельними батчами."""
     batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
     total_batches = len(batches)
     successful = 0
     failed = 0
     
-    for i, batch in enumerate(batches, 1):
-        print(f"🔄 Партія {i}/{total_batches} ({len(batch)} товарів)")
-        
-        # Формуємо payload
-        payload = []
-        for product in batch:
-            item = {"id": product["id"]}
-            if "price" in product:
-                item["price"] = product["price"]
-            if product.get("_presence_sure", False):
-                item["presence"] = product["presence"]
-                item["quantity_in_stock"] = product["quantity_in_stock"]
-                item["presence_sure"] = True
-            payload.append(item)
-        
-        # Відправка з 1 ретраєм
-        success = False
-        for attempt in range(2):  # 0 і 1 ретрай
-            try:
-                status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
-                if 200 <= status < 300:
-                    print(f"✅ Партія {i}: OK")
-                    successful += len(batch)
-                    success = True
-                    break
-                elif status in (403, 429) or 500 <= status <= 599:
-                    if attempt == 0:
-                        print(f"⚠️ Партія {i}: HTTP {status}, ретрай...")
-                        await asyncio.sleep(1)
-                        continue
-                else:
-                    print(f"❌ Партія {i}: HTTP {status}")
-                    break
-            except Exception as e:
-                if attempt == 0:
-                    print(f"⚠️ Партія {i}: {e}, ретрай...")
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    print(f"❌ Партія {i}: {e}")
-                    break
-        
-        if not success:
-            failed += len(batch)
-            if failed <= 20:  # Показуємо тільки перші 20 помилок
-                print(f"❌ Партія {i}: не вдалося оновити")
-        
-        # Затримка між батчами
-        if i < total_batches:
-            await asyncio.sleep(API_DELAY)
+    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (паралельно {CONCURRENT_BATCHES})")
+    
+    # Семафор для обмеження кількості паралельних запитів
+    semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
+    
+    async def process_batch(batch_idx: int, batch: List[Dict[str, Any]]) -> Tuple[int, int]:
+        async with semaphore:
+            print(f"🔄 Партія {batch_idx}/{total_batches} ({len(batch)} товарів)")
+            return await send_single_batch(session, client, batch, batch_idx)
+    
+    # Запускаємо всі батчі паралельно
+    tasks = [process_batch(i, batch) for i, batch in enumerate(batches, 1)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Підрахунок результатів
+    for result in results:
+        if isinstance(result, Exception):
+            failed += 1
+            print(f"❌ Помилка батча: {result}")
+        else:
+            succ, fail = result
+            successful += succ
+            failed += fail
     
     print(f"\n📊 Підсумок оновлення:")
     print(f"✅ Успішно: {successful} товарів")
