@@ -10,9 +10,10 @@ API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 FEEDS_FILE = "feeds.txt"
 STATE_FILE = "product_state.json"
-BATCH_SIZE = 50
+BATCH_SIZE = 100  # збільшено
 REQUEST_TIMEOUT = 120
-DELAY_BETWEEN_BATCHES = 1.0
+DELAY_BETWEEN_BATCHES = 0.3  # зменшено
+CONCURRENT_REQUESTS = 3  # паралельні запити до API
 
 HEADERS = {
     "User-Agent": (
@@ -123,13 +124,12 @@ async def send_updates(session, batch, batch_num, total_batches):
     try:
         async with session.post(API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT) as response:
             if response.status == 200:
-                print(f"✅ Партія {batch_num} успішно оновлена")
+                print(f"✅ Партія {batch_num}")
             else:
                 text = await response.text()
-                print(f"❌ Партія {batch_num} - помилка {response.status}")
-                print(f"Відповідь: {text[:100]}")
+                print(f"❌ Партія {batch_num} - помилка {response.status}: {text[:100]}")
     except Exception as e:
-        print(f"❌ Помилка для партії {batch_num}: {e}")
+        print(f"❌ Партія {batch_num}: {e}")
 
 async def main_async():
     if not API_TOKEN:
@@ -153,63 +153,65 @@ async def main_async():
     print("\n🔄 Збір даних з фідів...")
     
     async with aiohttp.ClientSession() as session:
+        # Паралельний збір фідів
+        tasks = []
         for url in feed_urls:
-            print(f"🔄 Обробка фіду: {url}")
-            success, products = await parse_feed(session, url)
-            
+            tasks.append(parse_feed(session, url))
+        
+        results = await asyncio.gather(*tasks)
+        
+        for url, (success, products) in zip(feed_urls, results):
             if success:
                 successful_feeds += 1
                 all_products.extend(products)
-                print(f"✅ Фід {url}: {len(products)} товарів")
+                print(f"✅ {url}: {len(products)} товарів")
             else:
                 failed_feeds.append(url)
 
         print(f"\n📊 Підсумок збору:")
         print(f"✅ Успішних фідів: {successful_feeds}/{len(feed_urls)}")
-        print(f"❌ Недоступних фідів: {len(failed_feeds)}")
         print(f"📦 Загальна кількість товарів: {len(all_products)}")
 
-        if failed_feeds:
-            print(f"\n⚠️ УВАГА: {len(failed_feeds)} фідів недоступні:")
-            for url in failed_feeds:
-                print(f"  - {url}")
-
         if not all_products:
-            print("\n❌ Немає товарів для оновлення!")
+            print("\n❌ Немає товарів!")
             return
 
         changed_products = [p for p in all_products if has_changed(p, old_state)]
         
-        print(f"\n🔍 Аналіз змін:")
-        print(f"📦 Всього товарів: {len(all_products)}")
+        print(f"\n🔍 Аналіз:")
+        print(f"📦 Всього: {len(all_products)}")
         print(f"🔄 Змінилось: {len(changed_products)}")
-        print(f"✅ Без змін: {len(all_products) - len(changed_products)}")
 
         if not changed_products:
-            print("\n✅ Немає змін для оновлення!")
+            print("\n✅ Немає змін!")
             save_current_state(all_products)
             return
 
         total_batches = (len(changed_products) - 1) // BATCH_SIZE + 1
-        print(f"\n🚀 Починаємо оновлення {len(changed_products)} товарів у {total_batches} партіях...")
+        print(f"\n🚀 Оновлення {len(changed_products)} товарів у {total_batches} партіях...")
         
         start_time = time.time()
         
-        for i in range(0, len(changed_products), BATCH_SIZE):
-            batch = changed_products[i:i+BATCH_SIZE]
-            batch_num = i // BATCH_SIZE + 1
-            await send_updates(session, batch, batch_num, total_batches)
-            if batch_num < total_batches:
-                await asyncio.sleep(DELAY_BETWEEN_BATCHES)
+        # Паралельні запити до API
+        for i in range(0, len(changed_products), BATCH_SIZE * CONCURRENT_REQUESTS):
+            batch_tasks = []
+            for j in range(CONCURRENT_REQUESTS):
+                batch_i = i + j * BATCH_SIZE
+                if batch_i >= len(changed_products):
+                    break
+                batch = changed_products[batch_i:batch_i+BATCH_SIZE]
+                batch_num = batch_i // BATCH_SIZE + 1
+                batch_tasks.append(send_updates(session, batch, batch_num, total_batches))
+            
+            await asyncio.gather(*batch_tasks)
+            await asyncio.sleep(DELAY_BETWEEN_BATCHES)
         
         end_time = time.time()
         duration = end_time - start_time
         
         save_current_state(all_products)
-        print(f"\n💾 Стан збережено: {len(all_products)} товарів")
-        print(f"\n✅ Оновлення завершено за {duration:.1f} секунд ({duration/60:.1f} хвилин)")
-        if changed_products:
-            print(f"📊 Середня швидкість: {len(changed_products)/duration:.1f} товарів/сек")
+        print(f"\n✅ Завершено за {duration:.1f}с ({duration/60:.1f}хв)")
+        print(f"📊 Швидкість: {len(changed_products)/duration:.1f} товарів/сек")
 
 def main():
     asyncio.run(main_async())
