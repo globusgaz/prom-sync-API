@@ -3,15 +3,52 @@ import json
 import requests
 import xml.etree.ElementTree as ET
 import time
+import hashlib
 
 API_URL = "https://my.prom.ua/api/v1/products/edit_by_external_id"
 API_TOKEN = os.getenv("PROM_API_TOKEN")
 
 FEEDS_FILE = "feeds.txt"
-BATCH_SIZE = 20  # зменшено для швидшої обробки
+STATE_FILE = "product_state.json"  # зберігаємо попередній стан
+BATCH_SIZE = 50  # збільшено, бо товарів менше
 REQUEST_TIMEOUT = 30
-DELAY_BETWEEN_BATCHES = 1.0  # 1 секунда між партіями
-MAX_PRODUCTS = 1000  # обмеження для тесту
+DELAY_BETWEEN_BATCHES = 1.0
+
+def load_previous_state():
+    """Завантажити попередній стан товарів"""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_current_state(products):
+    """Зберегти поточний стан товарів"""
+    state = {}
+    for p in products:
+        state[p["id"]] = {
+            "price": p["price"],
+            "presence": p["presence"],
+            "quantity_in_stock": p["quantity_in_stock"]
+        }
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+def has_changed(product, old_state):
+    """Перевірити чи змінився товар"""
+    product_id = product["id"]
+    if product_id not in old_state:
+        return True  # новий товар
+    
+    old = old_state[product_id]
+    # Порівнюємо ціну, наявність та кількість
+    return (
+        old.get("price") != product["price"] or
+        old.get("presence") != product["presence"] or
+        old.get("quantity_in_stock") != product["quantity_in_stock"]
+    )
 
 def parse_feed(url):
     try:
@@ -122,15 +159,19 @@ def main():
     with open(FEEDS_FILE, "r") as f:
         feed_urls = [line.strip() for line in f if line.strip()]
 
-    all_updates = []
+    # Завантажуємо попередній стан
+    old_state = load_previous_state()
+    print(f"📂 Завантажено попередній стан: {len(old_state)} товарів")
+
+    all_products = []
     successful_feeds = 0
 
-    print("🔄 Збір даних з фідів...")
+    print("\n🔄 Збір даних з фідів...")
     for url in feed_urls:
         print(f"🔄 Обробка фіду: {url}")
         feed_count = 0
         for product in parse_feed(url):
-            all_updates.append(product)
+            all_products.append(product)
             feed_count += 1
         
         if feed_count > 0:
@@ -139,25 +180,34 @@ def main():
 
     print(f"\n📊 Підсумок збору:")
     print(f"✅ Успішних фідів: {successful_feeds}/{len(feed_urls)}")
-    print(f"📦 Загальна кількість товарів: {len(all_updates)}")
+    print(f"📦 Загальна кількість товарів: {len(all_products)}")
 
-    if not all_updates:
-        print("❌ Немає товарів для оновлення!")
+    if not all_products:
+        print("❌ Немає товарів для обробки!")
         return
 
-    # Обмеження для швидкої роботи
-    if len(all_updates) > MAX_PRODUCTS:
-        print(f"⚠️ Обмежуємо до {MAX_PRODUCTS} товарів для швидкої роботи")
-        all_updates = all_updates[:MAX_PRODUCTS]
+    # Фільтруємо тільки змінені товари
+    changed_products = [p for p in all_products if has_changed(p, old_state)]
+    
+    print(f"\n🔍 Аналіз змін:")
+    print(f"📦 Всього товарів: {len(all_products)}")
+    print(f"🔄 Змінилось: {len(changed_products)}")
+    print(f"✅ Без змін: {len(all_products) - len(changed_products)}")
+
+    if not changed_products:
+        print("\n✅ Немає змін для оновлення!")
+        # Все одно зберігаємо стан
+        save_current_state(all_products)
+        return
 
     # Розрахунок партій
-    total_batches = (len(all_updates) - 1) // BATCH_SIZE + 1
-    print(f"\n🚀 Починаємо оновлення {len(all_updates)} товарів у {total_batches} партіях...")
+    total_batches = (len(changed_products) - 1) // BATCH_SIZE + 1
+    print(f"\n🚀 Починаємо оновлення {len(changed_products)} товарів у {total_batches} партіях...")
     
     start_time = time.time()
     
-    for i in range(0, len(all_updates), BATCH_SIZE):
-        batch = all_updates[i:i+BATCH_SIZE]
+    for i in range(0, len(changed_products), BATCH_SIZE):
+        batch = changed_products[i:i+BATCH_SIZE]
         batch_num = i // BATCH_SIZE + 1
         
         send_updates(batch, batch_num, total_batches)
@@ -169,8 +219,13 @@ def main():
     end_time = time.time()
     duration = end_time - start_time
     
-    print(f"\n✅ Оновлення завершено за {duration:.1f} секунд")
-    print(f"📊 Середня швидкість: {len(all_updates)/duration:.1f} товарів/сек")
+    # Зберігаємо новий стан
+    save_current_state(all_products)
+    print(f"\n💾 Стан збережено: {len(all_products)} товарів")
+    
+    print(f"\n✅ Оновлення завершено за {duration:.1f} секунд ({duration/60:.1f} хвилин)")
+    if changed_products:
+        print(f"📊 Середня швидкість: {len(changed_products)/duration:.1f} товарів/сек")
 
 if __name__ == "__main__":
     main()
