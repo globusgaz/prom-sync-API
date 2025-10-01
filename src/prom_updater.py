@@ -169,55 +169,66 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int, 
     return False, []
 
 async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua"""
-    batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
-    
-    for i, batch in enumerate(batches, 1):
-        print(f"🔄 Партія {i}/{len(batches)} ({len(batch)} товарів)")
-        
-        # Підготовка payload
-        payload = []
-        for product in batch:
-            item = {"id": product["id"]}
-            
+    """Відправляє оновлення на Prom.ua з ретраями та авто-розбиттям партій при 5xx."""
+    async def send_one_batch(batch_idx: int, total_batches: int, batch_items: List[Dict[str, Any]]) -> None:
+        print(f"🔄 Партія {batch_idx}/{total_batches} ({len(batch_items)} товарів)")
+        # Формуємо payload
+        payload: List[Dict[str, Any]] = []
+        for product in batch_items:
+            item: Dict[str, Any] = {"id": product["id"]}
             if "price" in product:
                 item["price"] = product["price"]
-            
-            # Відправляємо наявність тільки якщо є чіткий сигнал
             if product.get("_presence_sure", False):
                 item["presence"] = product["presence"]
                 item["quantity_in_stock"] = product["quantity_in_stock"]
                 item["presence_sure"] = True
-            
             payload.append(item)
-        
-        # Відправка на API
-        try:
-            status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
-            
+
+        # Ретраї для 5xx/мережевих
+        max_retries = 5
+        backoff = 1.0
+        for attempt in range(max_retries + 1):
+            try:
+                status, response_text = await client.update_products(session, "/api/v1/products/edit_by_external_id", payload)
+            except Exception as e:
+                status, response_text = 599, str(e)
+
             if 200 <= status < 300:
-                print(f"✅ Партія {i} успішно оновлена")
+                print(f"✅ Партія {batch_idx}: OK")
+                break
+
+            # Лог помилки
+            print(f"❌ Партія {batch_idx}: HTTP {status}")
+            preview = (response_text or "")[:400]
+            if preview:
+                print(f"📋 Відповідь API: {preview}")
+
+            # Якщо 5xx/429/403 — ретраїмо
+            if status in (403, 429) or 500 <= status <= 599:
+                if attempt < max_retries:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                    continue
+                # Після вичерпання ретраїв — пробуємо розбити партію навпіл
+                if len(batch_items) > 1:
+                    mid = len(batch_items) // 2
+                    left = batch_items[:mid]
+                    right = batch_items[mid:]
+                    print(f"✂️ Розбиття партії {batch_idx} на {len(left)} + {len(right)} через {status}")
+                    await send_one_batch(batch_idx, total_batches, left)
+                    await send_one_batch(batch_idx, total_batches, right)
+                else:
+                    print(f"⚠️ Неможливо розбити — пропускаємо id={batch_items[0]['id']}")
+                break
             else:
-                print(f"❌ Партія {i}: HTTP {status}")
-                try:
-                    response_data = json.loads(response_text)
-                    if "errors" in response_data:
-                        error_count = 0
-                        for product_id, error in response_data["errors"].items():
-                            if error_count < 5:  # Показуємо тільки перші 5 помилок
-                                print(f"  ❌ {product_id}: {error}")
-                            error_count += 1
-                        if error_count > 5:
-                            print(f"  ... та ще {error_count - 5} помилок")
-                    print(f"📋 Відповідь API: {response_text[:200]}...")
-                except json.JSONDecodeError:
-                    print(f"📋 Відповідь API: {response_text[:200]}")
-            
-        except Exception as e:
-            print(f"❌ Помилка при відправці партії {i}: {e}")
-        
-        # Затримка між запитами
-        if i < len(batches):
+                # Інші коди — не ретраїмо, рухаємось далі
+                break
+
+    batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
+    total = len(batches)
+    for i, batch in enumerate(batches, start=1):
+        await send_one_batch(i, total, batch)
+        if i < total:
             await asyncio.sleep(API_DELAY)
 
 async def main_async() -> int:
