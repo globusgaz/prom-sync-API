@@ -17,9 +17,9 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 100  # Великі батчі
-CONCURRENT_BATCHES = 5  # 5 паралельних запитів
-API_DELAY = 0.05  # Мінімальна затримка
+BATCH_SIZE = 10  # Маленькі батчі
+CONCURRENT_BATCHES = 1  # Тільки 1 запит за раз
+API_DELAY = 1.0  # Велика затримка між запитами
 
 # Заголовки для запитів до фідів
 HEADERS = {
@@ -197,49 +197,39 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
                 if status in (403, 429) or 500 <= status <= 599:
                     if attempt == 0:
                         print(f"⚠️ Партія {batch_idx}: ретрай через {status}")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(2)  # Збільшена затримка
                         continue
                 # Інші помилки - не ретраїмо
                 return 0, len(batch)
         except Exception as e:
             print(f"❌ Партія {batch_idx}: Exception {e}")
             if attempt == 0:
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 continue
             return 0, len(batch)
     
     return 0, len(batch)
 
 async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua з паралельними батчами."""
+    """Відправляє оновлення на Prom.ua послідовно з затримками."""
     batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
     total_batches = len(batches)
     successful = 0
     failed = 0
     
-    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (паралельно {CONCURRENT_BATCHES})")
+    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (послідовно з затримками)")
     
-    # Семафор для обмеження кількості паралельних запитів
-    semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
-    
-    async def process_batch(batch_idx: int, batch: List[Dict[str, Any]]) -> Tuple[int, int]:
-        async with semaphore:
-            print(f"🔄 Партія {batch_idx}/{total_batches} ({len(batch)} товарів)")
-            return await send_single_batch(session, client, batch, batch_idx)
-    
-    # Запускаємо всі батчі паралельно
-    tasks = [process_batch(i, batch) for i, batch in enumerate(batches, 1)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    # Підрахунок результатів
-    for result in results:
-        if isinstance(result, Exception):
-            failed += 1
-            print(f"❌ Помилка батча: {result}")
-        else:
-            succ, fail = result
-            successful += succ
-            failed += fail
+    # Послідовна обробка замість паралельної
+    for i, batch in enumerate(batches, 1):
+        print(f"🔄 Партія {i}/{total_batches} ({len(batch)} товарів)")
+        succ, fail = await send_single_batch(session, client, batch, i)
+        successful += succ
+        failed += fail
+        
+        # Затримка між батчами
+        if i < total_batches:
+            print(f"⏳ Затримка {API_DELAY}s...")
+            await asyncio.sleep(API_DELAY)
     
     print(f"\n📊 Підсумок оновлення:")
     print(f"✅ Успішно: {successful} товарів")
