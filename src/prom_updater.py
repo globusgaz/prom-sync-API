@@ -15,11 +15,11 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 10  # Менші батчі для зменшення навантаження
-CONCURRENT_BATCHES = 1  # Тільки 1 паралельний запит
-API_DELAY = 2.0  # Більша затримка між запитами
+BATCH_SIZE = 25  # Оптимальний розмір батчу
+CONCURRENT_BATCHES = 2  # 2 паралельних запити
+API_DELAY = 1.0  # Зменшена затримка між запитами
 
-# Заголовки для запитів до фідів
+# Заголовки для запитів
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
     "Accept": "application/xml, text/xml, */*",
@@ -30,136 +30,78 @@ HEADERS = {
     "Pragma": "no-cache"
 }
 
-# Функції для роботи з external_id
-def _starts_with_fpref(x: str) -> bool:
-    """Перевіряє чи починається рядок з префіксу fN_"""
-    return len(x) >= 3 and x[0] == "f" and x[1].isdigit() and x[2] == "_"
-
-def _build_external_id(offer: ET.Element, feed_index: int) -> Optional[str]:
-    """Будує external_id згідно з логікою yml_generator"""
-    # Спочатку перевіряємо vendorCode
-    vendor_code = offer.findtext("vendorCode")
-    if vendor_code and vendor_code.strip():
-        vc = vendor_code.strip()
-        # Якщо вже має префікс fN_, залишаємо як є
-        if _starts_with_fpref(vc):
-            return vc
-        # Інакше додаємо префікс f{feed_index}_
-        return f"f{feed_index}_{vc}"
-    
-    # Якщо немає vendorCode, беремо offer/@id
-    offer_id = offer.get("id")
-    if offer_id and offer_id.strip():
-        oid = offer_id.strip()
-        # Якщо вже має префікс fN_, залишаємо як є
-        if _starts_with_fpref(oid):
-            return oid
-        # Інакше додаємо префікс f{feed_index}_
-        return f"f{feed_index}_{oid}"
-    
-    # Якщо немає ні vendorCode, ні id, генеруємо MD5
-    try:
-        content = ET.tostring(offer, encoding="unicode")
-        md5_hash = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
-        return f"f{feed_index}_{md5_hash}"
-    except Exception:
-        return None
-
-def _extract_price(offer: ET.Element) -> Optional[float]:
-    """Витягує ціну з offer"""
-    price_elem = offer.find("price")
-    if price_elem is not None and price_elem.text:
-        try:
-            return float(price_elem.text.strip().replace(",", "."))
-        except (ValueError, AttributeError):
-            pass
-    return None
-
-def _infer_availability(offer: ET.Element) -> Tuple[bool, int, bool]:
-    """
-    Визначає наявність товару з offer
-    Повертає: (presence, quantity, sure)
-    sure = True означає що є чіткий сигнал наявності
-    """
-    # Перевіряємо атрибут available
-    available = offer.get("available")
-    if available is not None:
-        is_available = available.lower() in ("true", "1", "yes", "available", "in_stock")
-        return is_available, 1 if is_available else 0, True
-    
-    # Перевіряємо теги кількості
-    quantity_tags = ["quantity", "stock_quantity", "count", "quantity_in_stock"]
-    for tag in quantity_tags:
-        qty_elem = offer.find(tag)
-        if qty_elem is not None and qty_elem.text:
-            try:
-                qty = int(float(qty_elem.text.strip()))
-                return qty > 0, qty, True
-            except (ValueError, AttributeError):
-                continue
-    
-    # Перевіряємо теги наявності
-    presence_tags = ["presence", "in_stock", "available"]
-    for tag in presence_tags:
-        pres_elem = offer.find(tag)
-        if pres_elem is not None and pres_elem.text:
-            text = pres_elem.text.strip().lower()
-            if text in ("true", "1", "yes", "available", "in_stock"):
-                return True, 1, True
-            elif text in ("false", "0", "no", "out_of_stock", "not_available"):
-                return False, 0, True
-    
-    # Якщо немає чітких сигналів, вважаємо що товар в наявності
-    return True, 1, False
-
-def _parse_xml_content(content: bytes, feed_index: int) -> List[Dict[str, Any]]:
-    """Парсить XML контент і повертає список товарів."""
+def _parse_yml_content(content: bytes) -> List[Dict[str, Any]]:
+    """Парсить YML контент і повертає список товарів."""
     try:
         root = ET.fromstring(content)
         offers = root.findall(".//offer")
     except ET.ParseError as e:
-        print(f"❌ XML parse error: {e}")
+        print(f"❌ YML parse error: {e}")
         return []
 
     products: List[Dict[str, Any]] = []
     for offer in offers:
-        external_id = _build_external_id(offer, feed_index)
+        # В YML файлах external_id вже правильно сформований
+        external_id = offer.get("id")
         if not external_id:
             continue
-        price = _extract_price(offer)
-        presence, qty, sure = _infer_availability(offer)
+            
+        # Витягуємо ціну
+        price_elem = offer.find("price")
+        price = None
+        if price_elem is not None and price_elem.text:
+            try:
+                price = float(price_elem.text.strip().replace(",", "."))
+            except (ValueError, AttributeError):
+                pass
+        
+        # Витягуємо наявність
+        presence = True  # За замовчуванням товар в наявності
+        quantity_in_stock = 1
+        
+        # Перевіряємо атрибут available
+        available = offer.get("available")
+        if available is not None:
+            presence = available.lower() in ("true", "1", "yes", "available", "in_stock")
+            quantity_in_stock = 1 if presence else 0
+        
+        # Перевіряємо теги кількості
+        quantity_tags = ["quantity", "stock_quantity", "count", "quantity_in_stock"]
+        for tag in quantity_tags:
+            qty_elem = offer.find(tag)
+            if qty_elem is not None and qty_elem.text:
+                try:
+                    qty = int(float(qty_elem.text.strip()))
+                    quantity_in_stock = qty
+                    presence = qty > 0
+                    break
+                except (ValueError, AttributeError):
+                    continue
+        
         item: Dict[str, Any] = {"id": external_id}
         if price is not None:
             item["price"] = price
-        if sure:
-            item["presence"] = presence
-            item["quantity_in_stock"] = qty
-            item["_presence_sure"] = True
-        else:
-            item["_presence_sure"] = False
+        item["presence"] = presence
+        item["quantity_in_stock"] = quantity_in_stock
+        item["_presence_sure"] = True  # В YML файлах дані більш надійні
+        
         products.append(item)
+    
     return products
 
-async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) -> Tuple[bool, List[Dict[str, Any]]]:
-    """Парсить фід і повертає список товарів. Підтримує Basic Auth для api.dropshipping.ua."""
+async def parse_yml_url(session: aiohttp.ClientSession, url: str) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Парсить YML файл з URL і повертає список товарів."""
     try:
-        # Для api.dropshipping.ua додаємо Basic Auth
-        auth = None
-        if "api.dropshipping.ua" in url:
-            # Додайте ваші логін/пароль для api.dropshipping.ua
-            # Замініть "your_login" та "your_password" на реальні дані
-            auth = aiohttp.BasicAuth("your_login", "your_password")
-        
-        async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_FEED, auth=auth) as response:
+        async with session.get(url, headers=HEADERS, timeout=120) as response:
             if response.status == 200:
                 content = await response.read()
-                products = _parse_xml_content(content, feed_index)
+                products = _parse_yml_content(content)
                 return True, products
             else:
                 print(f"❌ {url}: HTTP {response.status}")
                 return False, []
     except Exception as e:
-        print(f"❌ {url}: {e}")
+        print(f"❌ Помилка при завантаженні {url}: {e}")
         return False, []
 
 async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, batch: List[Dict[str, Any]], batch_idx: int) -> Tuple[int, int]:
@@ -273,33 +215,29 @@ async def send_updates(session: aiohttp.ClientSession, client: PromClient, produ
     print(f"✅ Успішно оновлено: {total_success}")
     print(f"❌ Помилок: {total_errors}")
 
-def load_urls() -> List[str]:
-    """Завантажує список URL фідів з файлу feeds.txt"""
-    feeds_file = "feeds.txt"
-    if not os.path.exists(feeds_file):
-        print(f"❌ Файл {feeds_file} не знайдено")
-        return []
+def load_yml_urls() -> List[str]:
+    """Завантажує список URL YML файлів"""
+    yml_urls = [
+        "https://raw.githubusercontent.com/globusgaz/yml-generator/main/all_1.yml",
+        "https://raw.githubusercontent.com/globusgaz/yml-generator/main/all_2.yml", 
+        "https://raw.githubusercontent.com/globusgaz/yml-generator/main/all_3.yml"
+    ]
     
-    urls = []
-    with open(feeds_file, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and line.startswith("http"):
-                urls.append(line)
-    
-    return urls
+    return yml_urls
 
 async def main_async() -> int:
     """Основна асинхронна функція"""
     settings = get_settings()
     
-    # Завантаження URL фідів
-    urls = load_urls()
-    if not urls:
-        print("❌ Немає URL фідів для обробки")
+    # Завантаження YML URL
+    yml_urls = load_yml_urls()
+    if not yml_urls:
+        print("❌ Немає YML URL для обробки")
         return 1
     
-    print(f"🔗 Знайдено {len(urls)} фідів")
+    print(f"🔗 Знайдено {len(yml_urls)} YML URL")
+    for url in yml_urls:
+        print(f"  📄 {url}")
     
     # Завантаження попереднього стану
     state_file = "product_state.json"
@@ -313,24 +251,24 @@ async def main_async() -> int:
         except Exception:
             print("📂 Попередній стан не знайдено")
     
-    # Збір даних з фідів
-    print("🔄 Збір даних з фідів...")
+    # Збір даних з YML URL
+    print("🔄 Збір даних з YML URL...")
     all_products = []
-    successful_feeds = 0
+    successful_urls = 0
     
     async with aiohttp.ClientSession() as session:
-        for i, url in enumerate(urls, 1):
-            print(f"🔄 Обробка фіду: {url}")
-            success, products = await parse_feed(session, url, i)
+        for i, yml_url in enumerate(yml_urls, 1):
+            print(f"🔄 Обробка URL {i}: {yml_url}")
+            success, products = await parse_yml_url(session, yml_url)
             if success:
                 all_products.extend(products)
-                successful_feeds += 1
-                print(f"✅ Фід {url}: {len(products)} товарів")
+                successful_urls += 1
+                print(f"✅ URL {yml_url}: {len(products)} товарів")
             else:
-                print(f"❌ Фід {url}: помилка")
+                print(f"❌ URL {yml_url}: помилка")
     
     print(f"\n📊 Підсумок збору:")
-    print(f"✅ Успішних фідів: {successful_feeds}/{len(urls)}")
+    print(f"✅ Успішних URL: {successful_urls}/{len(yml_urls)}")
     print(f"📦 Загальна кількість товарів: {len(all_products)}")
     
     if not all_products:
