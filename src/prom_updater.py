@@ -8,8 +8,6 @@ import hashlib
 import xml.etree.ElementTree as ET
 
 import aiohttp
-import random
-from urllib.parse import urlsplit, urlunsplit
 
 from src.config import get_settings
 from src.prom_client import PromClient
@@ -32,41 +30,40 @@ HEADERS = {
     "Pragma": "no-cache"
 }
 
-# Витяг облікових даних з URL (user:pass@host)
-def _extract_basic_auth(url: str) -> Tuple[str, Optional[aiohttp.BasicAuth]]:
-    parts = urlsplit(url)
-    if parts.username or parts.password:
-        clean_netloc = parts.hostname
-        if parts.port:
-            clean_netloc = f"{clean_netloc}:{parts.port}"
-        clean_url = urlunsplit((parts.scheme, clean_netloc, parts.path, parts.query, parts.fragment))
-        auth = aiohttp.BasicAuth(parts.username or "", parts.password or "")
-        return clean_url, auth
-    return url, None
-
 # Функції для роботи з external_id
 def _starts_with_fpref(x: str) -> bool:
     """Перевіряє чи починається рядок з префіксу fN_"""
     return len(x) >= 3 and x[0] == "f" and x[1].isdigit() and x[2] == "_"
 
-def _text_of(elem: Optional[ET.Element]) -> str:
-    """Безпечно отримує текст з елемента"""
-    return (elem.text or "").strip() if elem is not None else ""
-
 def _build_external_id(offer: ET.Element, feed_index: int) -> Optional[str]:
-    """Побудова external_id згідно з логікою YML генератора"""
-    offer_id = offer.get("id") or ""
-    vendor_code = _text_of(offer.find("vendorCode")) or ""
+    """Будує external_id згідно з логікою yml_generator"""
+    # Спочатку перевіряємо vendorCode
+    vendor_code = offer.findtext("vendorCode")
+    if vendor_code and vendor_code.strip():
+        vc = vendor_code.strip()
+        # Якщо вже має префікс fN_, залишаємо як є
+        if _starts_with_fpref(vc):
+            return vc
+        # Інакше додаємо префікс f{feed_index}_
+        return f"f{feed_index}_{vc}"
     
-    # Перевіряємо чи вже є префікс fN_
-    if vendor_code and _starts_with_fpref(vendor_code):
-        return vendor_code
-    if offer_id and _starts_with_fpref(offer_id):
-        return offer_id
+    # Якщо немає vendorCode, беремо offer/@id
+    offer_id = offer.get("id")
+    if offer_id and offer_id.strip():
+        oid = offer_id.strip()
+        # Якщо вже має префікс fN_, залишаємо як є
+        if _starts_with_fpref(oid):
+            return oid
+        # Інакше додаємо префікс f{feed_index}_
+        return f"f{feed_index}_{oid}"
     
-    # Якщо немає префіксу, додаємо f{feed_index}_
-    base = vendor_code or offer_id or hashlib.md5(ET.tostring(offer)).hexdigest()
-    return f"f{feed_index}_{base}" if base else None
+    # Якщо немає ні vendorCode, ні id, генеруємо MD5
+    try:
+        content = ET.tostring(offer, encoding="unicode")
+        md5_hash = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
+        return f"f{feed_index}_{md5_hash}"
+    except Exception:
+        return None
 
 def _extract_price(offer: ET.Element) -> Optional[float]:
     """Витягує ціну з offer"""
@@ -115,59 +112,48 @@ def _infer_availability(offer: ET.Element) -> Tuple[bool, int, bool]:
     # Якщо немає чітких сигналів, вважаємо що товар в наявності
     return True, 1, False
 
-async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int, auth: Optional[aiohttp.BasicAuth]) -> Tuple[bool, List[Dict[str, Any]]]:
-    """Парсить фід і повертає список товарів. Підтримує Basic Auth та ретраї."""
-    backoffs = [0, 1, 2, 4, 8, 16]
-    clean_url, embedded_auth = _extract_basic_auth(url)
-    if embedded_auth is not None:
-        auth = embedded_auth
-    for attempt, delay in enumerate(backoffs):
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            ua = HEADERS["User-Agent"]
-            if attempt:
-                ua = f"{ua} rv/{random.randint(60,120)}.0"
-            headers = {**HEADERS, "User-Agent": ua, "Referer": clean_url}
-            async with session.get(clean_url, headers=headers, timeout=REQUEST_TIMEOUT_FEED, auth=auth) as resp:
-                if not (200 <= resp.status < 300):
-                    if resp.status in (403, 429) or 500 <= resp.status <= 599:
-                        print(f"⚠️ {clean_url} — HTTP {resp.status}, ретрай #{attempt}")
-                        continue
-                    print(f"❌ {clean_url} — HTTP {resp.status}")
-                    return False, []
-                content = await resp.read()
-        except Exception as e:
-            print(f"⚠️ {clean_url}: {e}, ретрай #{attempt}")
-            continue
-        # Парсимо при успішній відповіді
-        try:
-            root = ET.fromstring(content)
-            offers = root.findall(".//offer")
-        except ET.ParseError as e:
-            print(f"❌ XML parse error {clean_url}: {e}")
-            return False, []
+def _parse_xml_content(content: bytes, feed_index: int) -> List[Dict[str, Any]]:
+    """Парсить XML контент і повертає список товарів."""
+    try:
+        root = ET.fromstring(content)
+        offers = root.findall(".//offer")
+    except ET.ParseError as e:
+        print(f"❌ XML parse error: {e}")
+        return []
 
-        products: List[Dict[str, Any]] = []
-        for offer in offers:
-            external_id = _build_external_id(offer, feed_index)
-            if not external_id:
-                continue
-            price = _extract_price(offer)
-            presence, qty, sure = _infer_availability(offer)
-            item: Dict[str, Any] = {"id": external_id}
-            if price is not None:
-                item["price"] = price
-            if sure:
-                item["presence"] = presence
-                item["quantity_in_stock"] = qty
-                item["_presence_sure"] = True
+    products: List[Dict[str, Any]] = []
+    for offer in offers:
+        external_id = _build_external_id(offer, feed_index)
+        if not external_id:
+            continue
+        price = _extract_price(offer)
+        presence, qty, sure = _infer_availability(offer)
+        item: Dict[str, Any] = {"id": external_id}
+        if price is not None:
+            item["price"] = price
+        if sure:
+            item["presence"] = presence
+            item["quantity_in_stock"] = qty
+            item["_presence_sure"] = True
+        else:
+            item["_presence_sure"] = False
+        products.append(item)
+    return products
+
+async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Парсить фід і повертає список товарів. Простий підхід як в yml_generator."""
+    try:
+        async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_FEED) as response:
+            if response.status == 200:
+                content = await response.read()
+                products = _parse_xml_content(content, feed_index)
+                return True, products
             else:
-                item["_presence_sure"] = False
-            products.append(item)
-        return True, products
-    print(f"❌ {clean_url}: вичерпано спроби")
-    return False, []
+                print(f"❌ {url}: HTTP {response.status}")
+                return False, []
+    except Exception as e:
+        print(f"❌ {url}: {e}")
+        return False, []
 
 async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, batch: List[Dict[str, Any]], batch_idx: int) -> Tuple[int, int]:
     """Відправляє один батч і повертає (успішні, помилки)"""
@@ -235,57 +221,74 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
     
     return 0, len(batch)
 
-async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int = BATCH_SIZE) -> None:
-    """Відправляє оновлення на Prom.ua з обмеженою паралельністю."""
-    batches = [products[i:i + batch_size] for i in range(0, len(products), batch_size)]
-    total_batches = len(batches)
-    successful = 0
-    failed = 0
+async def send_updates(session: aiohttp.ClientSession, client: PromClient, products: List[Dict[str, Any]], batch_size: int) -> None:
+    """Відправляє оновлення товарів батчами"""
+    total_products = len(products)
+    total_batches = (total_products + batch_size - 1) // batch_size
     
-    print(f"🚀 Відправляємо {total_batches} батчів по {batch_size} товарів (паралельно {CONCURRENT_BATCHES})")
+    print(f"🚀 Починаємо оновлення {total_products} товарів у {total_batches} партіях...")
     
-    # Семафор для обмеження кількості паралельних запитів
+    # Створюємо семафор для обмеження паралельних запитів
     semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
     
     async def process_batch(batch_idx: int, batch: List[Dict[str, Any]]) -> Tuple[int, int]:
         async with semaphore:
-            print(f"🔄 Партія {batch_idx}/{total_batches} ({len(batch)} товарів)")
+            await asyncio.sleep(API_DELAY)  # Затримка між запитами
             return await send_single_batch(session, client, batch, batch_idx)
     
-    # Запускаємо всі батчі паралельно з обмеженням
-    tasks = [process_batch(i, batch) for i, batch in enumerate(batches, 1)]
+    # Розбиваємо на батчі
+    batches = []
+    for i in range(0, total_products, batch_size):
+        batch = products[i:i + batch_size]
+        batch_idx = i // batch_size + 1
+        batches.append((batch_idx, batch))
+    
+    # Обробляємо батчі паралельно
+    tasks = [process_batch(batch_idx, batch) for batch_idx, batch in batches]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     # Підрахунок результатів
-    for result in results:
+    total_success = 0
+    total_errors = 0
+    
+    for i, result in enumerate(results):
         if isinstance(result, Exception):
-            failed += 1
-            print(f"❌ Помилка батча: {result}")
+            print(f"❌ Партія {i+1}: Exception {result}")
+            total_errors += len(batches[i][1])
         else:
-            succ, fail = result
-            successful += succ
-            failed += fail
+            success, errors = result
+            total_success += success
+            total_errors += errors
     
     print(f"\n📊 Підсумок оновлення:")
-    print(f"✅ Успішно: {successful} товарів")
-    print(f"❌ Помилок: {failed} товарів")
+    print(f"✅ Успішно оновлено: {total_success}")
+    print(f"❌ Помилок: {total_errors}")
 
-async def main_async() -> int:
-    """Основна функція"""
-    settings = get_settings()
-    
-    if not settings.prom_api_token:
-        print("❌ PROM_API_TOKEN не встановлено")
-        return 1
-    
-    # Завантаження URL фідів
-    feeds_file = os.path.join(os.getcwd(), "feeds.txt")
+def load_urls() -> List[str]:
+    """Завантажує список URL фідів з файлу feeds.txt"""
+    feeds_file = "feeds.txt"
     if not os.path.exists(feeds_file):
         print(f"❌ Файл {feeds_file} не знайдено")
-        return 1
+        return []
     
+    urls = []
     with open(feeds_file, "r", encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip().startswith("http")]
+        for line in f:
+            line = line.strip()
+            if line and line.startswith("http"):
+                urls.append(line)
+    
+    return urls
+
+async def main_async() -> int:
+    """Основна асинхронна функція"""
+    settings = get_settings()
+    
+    # Завантаження URL фідів
+    urls = load_urls()
+    if not urls:
+        print("❌ Немає URL фідів для обробки")
+        return 1
     
     print(f"🔗 Знайдено {len(urls)} фідів")
     
@@ -295,7 +298,8 @@ async def main_async() -> int:
     if os.path.exists(state_file):
         try:
             with open(state_file, "r", encoding="utf-8") as f:
-                previous_state = json.load(f)
+                data = json.load(f)
+                previous_state = data.get("products", {})
             print(f"📂 Завантажено попередній стан: {len(previous_state)} товарів")
         except Exception:
             print("📂 Попередній стан не знайдено")
@@ -307,15 +311,14 @@ async def main_async() -> int:
     
     async with aiohttp.ClientSession() as session:
         for i, url in enumerate(urls, 1):
-            clean_url, auth = _extract_basic_auth(url)
-            print(f"🔄 Обробка фіду: {clean_url}")
-            success, products = await parse_feed(session, clean_url, i, auth)
+            print(f"🔄 Обробка фіду: {url}")
+            success, products = await parse_feed(session, url, i)
             if success:
                 all_products.extend(products)
                 successful_feeds += 1
-                print(f"✅ Фід {clean_url}: {len(products)} товарів")
+                print(f"✅ Фід {url}: {len(products)} товарів")
             else:
-                print(f"❌ Фід {clean_url}: помилка")
+                print(f"❌ Фід {url}: помилка")
     
     print(f"\n📊 Підсумок збору:")
     print(f"✅ Успішних фідів: {successful_feeds}/{len(urls)}")
@@ -327,32 +330,19 @@ async def main_async() -> int:
     
     # Аналіз змін
     print("\n🔍 Аналіз змін:")
-    current_state = {p["id"]: p for p in all_products}
-    changed_products = []
-    
-    for product in all_products:
-        product_id = product["id"]
-        if product_id not in previous_state:
-            changed_products.append(product)
-        else:
-            prev = previous_state[product_id]
-            # Порівнюємо ціну та наявність
-            if (product.get("price") != prev.get("price") or 
-                product.get("presence") != prev.get("presence") or
-                product.get("quantity_in_stock") != prev.get("quantity_in_stock")):
-                changed_products.append(product)
-    
     print(f"📦 Всього товарів: {len(all_products)}")
-    print(f"🔄 Змінилось: {len(changed_products)}")
-    print(f"✅ Без змін: {len(all_products) - len(changed_products)}")
     
-    if not changed_products:
-        print("⏭️ Змін не виявлено — пропускаємо оновлення")
+    # ЗАВЖДИ оновлюємо всі товари
+    products_to_update = all_products
+    print(f"🔄 Оновлюємо ВСІ товари: {len(products_to_update)}")
+    
+    if not products_to_update:
+        print("✅ Немає товарів для оновлення")
         return 0
-    
+
     # Відправка оновлень
-    print(f"\n🚀 Оновлення {len(changed_products)} товарів...")
-    
+    print(f"\n🚀 Оновлення {len(products_to_update)} товарів...")
+
     client = PromClient(
         base_url=settings.prom_base_url,
         token=settings.prom_api_token,
@@ -360,13 +350,17 @@ async def main_async() -> int:
         auth_scheme=settings.prom_auth_scheme,
         timeout_seconds=settings.http_timeout_seconds,
     )
-    
+
     async with aiohttp.ClientSession() as session:
-        await send_updates(session, client, changed_products, BATCH_SIZE)
+        await send_updates(session, client, products_to_update, BATCH_SIZE)
     
     # Збереження стану
+    state = {
+        "timestamp": datetime.now().isoformat(),
+        "products": {p["id"]: p for p in all_products}
+    }
     with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(current_state, f, ensure_ascii=False, indent=2)
+        json.dump(state, f, ensure_ascii=False, indent=2)
     
     print("✅ Оновлення завершено")
     return 0
