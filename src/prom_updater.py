@@ -15,9 +15,9 @@ from src.prom_client import PromClient
 # Константи
 REQUEST_TIMEOUT_FEED = aiohttp.ClientTimeout(total=120)
 REQUEST_TIMEOUT_API = aiohttp.ClientTimeout(total=30)
-BATCH_SIZE = 50  # Середні батчі
-CONCURRENT_BATCHES = 2  # 2 паралельних запити
-API_DELAY = 0.5  # Середня затримка між запитами
+BATCH_SIZE = 10  # Менші батчі для зменшення навантаження
+CONCURRENT_BATCHES = 1  # Тільки 1 паралельний запит
+API_DELAY = 2.0  # Більша затримка між запитами
 
 # Заголовки для запитів до фідів
 HEADERS = {
@@ -146,8 +146,9 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) 
         # Для api.dropshipping.ua додаємо Basic Auth
         auth = None
         if "api.dropshipping.ua" in url:
-            # Логін/пароль для api.dropshipping.ua
-            auth = aiohttp.BasicAuth("detal.ua.kolo@gmail.com", "}cE>+>;q{eo<\"+C;&qc-.K@hl=?S08RxASn0t?%|kN+?TilT$cB")
+            # Додайте ваші логін/пароль для api.dropshipping.ua
+            # Замініть "your_login" та "your_password" на реальні дані
+            auth = aiohttp.BasicAuth("your_login", "your_password")
         
         async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_FEED, auth=auth) as response:
             if response.status == 200:
@@ -164,10 +165,11 @@ async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) 
 async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, batch: List[Dict[str, Any]], batch_idx: int) -> Tuple[int, int]:
     """Відправляє один батч і повертає (успішні, помилки)"""
     # Формуємо payload згідно з документацією Prom.ua
+    # API Prom.ua очікує поле 'id' замість 'external_id'
     payload = []
     for product in batch:
         item = {
-            "external_id": product["id"],  # external_id замість id
+            "id": product["id"],  # Використовуємо 'id' замість 'external_id'
         }
         
         # Додаємо ціну тільки якщо вона є
@@ -215,7 +217,7 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
                 if status in (403, 429) or 500 <= status <= 599:
                     if attempt == 0:
                         print(f"⚠️ Партія {batch_idx}: ретрай через {status}")
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(5)  # Більша затримка для серверних помилок
                         continue
                 # Інші помилки - не ретраїмо
                 return 0, len(batch)
