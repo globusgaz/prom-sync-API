@@ -141,9 +141,15 @@ def _parse_xml_content(content: bytes, feed_index: int) -> List[Dict[str, Any]]:
     return products
 
 async def parse_feed(session: aiohttp.ClientSession, url: str, feed_index: int) -> Tuple[bool, List[Dict[str, Any]]]:
-    """Парсить фід і повертає список товарів. Простий підхід як в yml_generator."""
+    """Парсить фід і повертає список товарів. Підтримує Basic Auth для api.dropshipping.ua."""
     try:
-        async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_FEED) as response:
+        # Для api.dropshipping.ua додаємо Basic Auth
+        auth = None
+        if "api.dropshipping.ua" in url:
+            # Логін/пароль для api.dropshipping.ua
+            auth = aiohttp.BasicAuth("detal.ua.kolo@gmail.com", "}cE>+>;q{eo<\"+C;&qc-.K@hl=?S08RxASn0t?%|kN+?TilT$cB")
+        
+        async with session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT_FEED, auth=auth) as response:
             if response.status == 200:
                 content = await response.read()
                 products = _parse_xml_content(content, feed_index)
@@ -162,8 +168,11 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
     for product in batch:
         item = {
             "external_id": product["id"],  # external_id замість id
-            "price": product.get("price"),  # ціна
         }
+        
+        # Додаємо ціну тільки якщо вона є
+        if product.get("price") is not None:
+            item["price"] = product["price"]
         
         # Додаємо наявність тільки якщо є чіткий сигнал
         if product.get("_presence_sure", False):
@@ -171,8 +180,6 @@ async def send_single_batch(session: aiohttp.ClientSession, client: PromClient, 
             item["quantity_in_stock"] = product["quantity_in_stock"]
             item["presence_sure"] = True
         
-        # Видаляємо None значення
-        item = {k: v for k, v in item.items() if v is not None}
         payload.append(item)
     
     # Відправка з 1 ретраєм
